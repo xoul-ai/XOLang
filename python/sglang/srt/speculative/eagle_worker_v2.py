@@ -237,6 +237,13 @@ class EAGLEWorker(TpModelWorker):
             return batch_output
 
     def draft(self, batch: ModelWorkerBatch):
+        def sync():
+            spec_info = batch.spec_info
+            if spec_info.verify_done is not None:
+                spec_info.verify_done.synchronize()
+            else:
+                batch.seq_lens_sum = batch.seq_lens.sum().item()
+
         # Prepare for draft
         spec_info = batch.spec_info
         forward_batch, can_cuda_graph = spec_info.prepare_for_draft(
@@ -246,7 +253,7 @@ class EAGLEWorker(TpModelWorker):
         # Run draft
         if can_cuda_graph:
             score_list, token_list, parents_list = self.cuda_graph_runner.replay(
-                forward_batch,
+                forward_batch, sync=sync
             )
         else:
             self.draft_attn_backend.init_forward_metadata(forward_batch)
@@ -257,6 +264,11 @@ class EAGLEWorker(TpModelWorker):
         tree_mask_buf, position_buf = (
             self.target_worker.model_runner.attn_backend.get_verify_buffers_to_fill_after_draft()
         )
+
+        if spec_info.verify_done is not None:
+            batch.seq_lens_sum = spec_info.new_seq_lens_cpu.sum().item()
+        else:
+            batch.seq_lens_sum = batch.seq_lens.sum().item()
 
         (
             tree_mask,
@@ -396,6 +408,7 @@ class EAGLEWorker(TpModelWorker):
             accept_index,
         ) = spec_info.sample(batch, logits_output)
         new_seq_lens = seq_lens_backup + accept_length
+        new_seq_lens_cpu = new_seq_lens.to("cpu", non_blocking=True)
         verify_done = torch.cuda.Event()
         verify_done.record()
 
@@ -462,6 +475,7 @@ class EAGLEWorker(TpModelWorker):
             allocate_lens=old_spec_info.allocate_lens,
             verify_done=verify_done,
         )
+        draft_input.new_seq_lens_cpu = new_seq_lens_cpu
         return ForwardBatchOutput(
             logits_output=logits_output,
             next_token_ids=predict,

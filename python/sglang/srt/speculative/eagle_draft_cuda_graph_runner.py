@@ -283,6 +283,7 @@ class EAGLEDraftCudaGraphRunner:
     def replay_prepare(
         self,
         forward_batch: ForwardBatch,
+        sync: Callable = None,
     ):
         assert forward_batch.out_cache_loc is not None
         raw_bs = forward_batch.batch_size
@@ -304,6 +305,7 @@ class EAGLEDraftCudaGraphRunner:
             self.out_cache_loc.zero_()
 
         num_tokens = bs * self.num_tokens_per_bs
+        sync()
 
         # Common inputs
         self.req_pool_indices[:raw_bs].copy_(forward_batch.req_pool_indices)
@@ -330,13 +332,6 @@ class EAGLEDraftCudaGraphRunner:
             forward_batch.req_pool_indices = self.req_pool_indices[:bs]
             forward_batch.positions = self.positions[:num_tokens]
 
-        # Special handle for seq_len_cpu used when flashinfer mla is used
-        if forward_batch.seq_lens_cpu is not None:
-            if bs != raw_bs:
-                self.seq_lens_cpu.fill_(self.seq_len_fill_value)
-            self.seq_lens_cpu[:raw_bs].copy_(forward_batch.seq_lens_cpu)
-            forward_batch.seq_lens_cpu = self.seq_lens_cpu[:bs]
-
         self.model_runner.draft_attn_backend.init_forward_metadata_replay_cuda_graph(
             forward_batch, bs
         )
@@ -350,9 +345,10 @@ class EAGLEDraftCudaGraphRunner:
         self,
         forward_batch: ForwardBatch,
         skip_attn_backend_init: bool = False,
+        sync: Callable = None,
     ):
         if not skip_attn_backend_init:
-            self.replay_prepare(forward_batch)
+            self.replay_prepare(forward_batch, sync=sync)
         else:
             # In speculative decoding, these fields are wrong during the
             # overlapped preparation, so we need to copy them again in the main stream.

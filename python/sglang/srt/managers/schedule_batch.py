@@ -1064,9 +1064,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.spec_info.allocate_lens = new_allocate_lens
 
         # We need this to get the correct self.seq_lens
-        if self.verify_done is not None:
-            self.verify_done.synchronize()
-        self.seq_lens_sum = self.seq_lens.sum().item()
+        # if self.verify_done is not None:
+        #     self.verify_done.synchronize()
+        self.seq_lens_sum = None
 
     def prepare_encoder_info_extend(self, input_ids: List[int], seq_lens: List[int]):
         self.encoder_lens_cpu = []
@@ -1730,7 +1730,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             req_pool_indices=self.req_pool_indices,
             seq_lens=self.seq_lens,
             out_cache_loc=self.out_cache_loc,
-            seq_lens_cpu=self.seq_lens.cpu(),
+            seq_lens_cpu=None,
             seq_lens_sum=self.seq_lens_sum,
             return_logprob=self.return_logprob,
             top_logprobs_nums=self.top_logprobs_nums,
