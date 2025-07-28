@@ -16,6 +16,7 @@ from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
     from sglang.srt.model_executor.model_runner import ModelRunner
+    from sglang.srt.speculative.spec_info import SpecInfo
 
 from sgl_kernel import merge_state_v2
 from sgl_kernel.flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
@@ -64,6 +65,12 @@ class FlashAttentionMetadata:
 
     local_attn_metadata: Optional[LocalAttentionMetadata] = None
 
+@dataclass
+class EagleDraftCudaGraphBuffer:
+    cache_seqlens: torch.Tensor = None
+    cu_seqlens_q: torch.Tensor = None
+    cu_seqlens_k: torch.Tensor = None
+    page_table: torch.Tensor = None
 
 # Copied from:
 # https://github.com/houseroad/vllm/blob/4e45bfcaf928bdb9bd952b4ac922a3c205589ae8/vllm/v1/attention/backends/flash_attn.py
@@ -568,10 +575,11 @@ class FlashAttentionBackend(AttentionBackend):
 
             if (
                 any(forward_batch.extend_prefix_lens_cpu)
-                or forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND
+                or forward_batch.forward_mode.is_draft_extend()
+                or forward_batch.forward_mode.is_draft_extend_v2()
             ):
                 extend_seq_lens = forward_batch.extend_seq_lens
-                metadata.max_seq_len_q = max(forward_batch.extend_seq_lens_cpu)
+                metadata.max_seq_len_q = forward_batch.extend_seq_lens.max().item()
                 metadata.cu_seqlens_q = torch.nn.functional.pad(
                     torch.cumsum(extend_seq_lens, dim=0, dtype=torch.int32), (1, 0)
                 )
@@ -1136,7 +1144,11 @@ class FlashAttentionBackend(AttentionBackend):
 
         return o.view(-1, layer.tp_q_head_num * layer.v_head_dim)
 
-    def init_cuda_graph_state(self, max_bs: int, max_num_tokens: int):
+    def init_cuda_graph_state(
+            self, max_bs: int, 
+            max_num_tokens: int,
+            eagle_draft_cuda_graph_buffer: EagleDraftCudaGraphBuffer = None,
+        ):
         """Initialize CUDA graph state for the attention backend.
 
         Args:
@@ -1146,20 +1158,27 @@ class FlashAttentionBackend(AttentionBackend):
         to avoid memory allocations.
         """
         # This is being used by normal decode and draft decode when topk == 1
-        self.decode_cuda_graph_metadata = {
-            "cache_seqlens": torch.zeros(max_bs, dtype=torch.int32, device=self.device),
-            "cu_seqlens_q": torch.arange(
-                0, max_bs + 1, dtype=torch.int32, device=self.device
-            ),
-            "cu_seqlens_k": torch.zeros(
-                max_bs + 1, dtype=torch.int32, device=self.device
-            ),
-            "page_table": torch.zeros(
+        if eagle_draft_cuda_graph_buffer is not None:
+            cache_seqlens = eagle_draft_cuda_graph_buffer.cache_seqlens
+            cu_seqlens_q = eagle_draft_cuda_graph_buffer.cu_seqlens_q
+            cu_seqlens_k = eagle_draft_cuda_graph_buffer.cu_seqlens_k
+            page_table = eagle_draft_cuda_graph_buffer.page_table
+        else:
+            cache_seqlens = torch.zeros(max_bs, dtype=torch.int32, device=self.device)
+            cu_seqlens_q = torch.arange(0, max_bs + 1, dtype=torch.int32, device=self.device)
+            cu_seqlens_k = torch.zeros(max_bs + 1, dtype=torch.int32, device=self.device)
+            page_table = torch.zeros(
                 max_bs,
                 (self.max_context_len + self.page_size - 1) // self.page_size,
                 dtype=torch.int32,
                 device=self.device,
-            ),
+            )
+
+        self.decode_cuda_graph_metadata = {
+            "cache_seqlens": cache_seqlens,
+            "cu_seqlens_q": cu_seqlens_q,
+            "cu_seqlens_k": cu_seqlens_k,
+            "page_table": page_table,
             "page_table_draft_decode": torch.zeros(
                 max_bs,
                 (self.max_context_len + self.page_size - 1) // self.page_size,
@@ -1838,6 +1857,18 @@ class FlashAttentionBackend(AttentionBackend):
         """Get the fill value for sequence length in CUDA graph."""
         return 1
 
+    def get_verify_buffers_to_fill_after_draft(self):
+        """
+        Return buffers for verify attention kernels that needs to be filled after draft.
+        Typically, these are tree mask and position buffers.
+        """
+        return [None, None]
+
+    def update_verify_buffers_to_fill_after_draft(
+        self, spec_info: SpecInfo, cuda_graph_bs: Optional[int]
+    ):
+        pass
+
     def _init_local_attn_metadata(
         self, forwardbatch: ForwardBatch, metadata: FlashAttentionMetadata, device
     ):
@@ -2027,6 +2058,9 @@ class FlashAttentionMultiStepBackend:
         self.model_runner = model_runner
         self.topk = topk
         self.speculative_num_steps = speculative_num_steps
+        self.page_size = model_runner.page_size
+        self.max_context_len = model_runner.model_config.context_len
+        self.device = model_runner.device
         self.attn_backends = []
         for i in range(self.speculative_num_steps):
             self.attn_backends.append(
@@ -2043,8 +2077,21 @@ class FlashAttentionMultiStepBackend:
             self.attn_backends[i].init_forward_metadata(forward_batch)
 
     def init_cuda_graph_state(self, max_bs: int, max_num_tokens: int):
-        for i in range(self.speculative_num_steps):
-            self.attn_backends[i].init_cuda_graph_state(max_bs, max_num_tokens)
+        if self.topk == 1:
+            self.cache_seqlens = torch.zeros(self.speculative_num_steps, max_bs, dtype=torch.int32, device=self.device)
+            self.cu_seqlens_q = torch.zeros(self.speculative_num_steps, max_bs + 1, dtype=torch.int32, device=self.device)
+            self.cu_seqlens_k = torch.zeros(self.speculative_num_steps, max_bs + 1, dtype=torch.int32, device=self.device)
+            self.page_table = torch.zeros(self.speculative_num_steps, max_bs, (self.max_context_len + self.page_size - 1) // self.page_size, dtype=torch.int32, device=self.device)
+            for i in range(self.speculative_num_steps):
+                self.attn_backends[i].init_cuda_graph_state(max_bs, max_num_tokens, eagle_draft_cuda_graph_buffer=EagleDraftCudaGraphBuffer(
+                    self.cache_seqlens,
+                    self.cu_seqlens_q,
+                    self.cu_seqlens_k,
+                    self.page_table,
+                ))
+        else:
+            for i in range(self.speculative_num_steps):
+                self.attn_backends[i].init_cuda_graph_state(max_bs, max_num_tokens)
 
     def init_forward_metadata_capture_cuda_graph(
         self,
@@ -2068,7 +2115,7 @@ class FlashAttentionMultiStepBackend:
         self, forward_batch: ForwardBatch, bs: int
     ):
         assert forward_batch.spec_info is not None
-        assert isinstance(forward_batch.spec_info, EagleDraftInput)
+        # assert isinstance(forward_batch.spec_info, EagleDraftInput)
 
         for i in range(self.speculative_num_steps - 1):
             # TODO: incrementally update the metadata for the later steps,

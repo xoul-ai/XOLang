@@ -121,6 +121,7 @@ class ForwardMode(IntEnum):
         return (
             self == ForwardMode.EXTEND
             or self == ForwardMode.DRAFT_EXTEND
+            or self == ForwardMode.DRAFT_EXTEND_V2
             or self == ForwardMode.MIXED
         )
 
