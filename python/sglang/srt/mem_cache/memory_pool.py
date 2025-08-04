@@ -457,6 +457,12 @@ class MHATokenToKVPool(KVCache):
             self.k_buffer[layer_id - self.start_layer][loc] = cache_k
             self.v_buffer[layer_id - self.start_layer][loc] = cache_v
 
+    def assign_cache(self, k_data, v_data, indices):
+        indices = indices.to(self.device)
+        for i in range(len(k_data)):
+            self.k_buffer[i][indices] = k_data[i].to(self.device)
+            self.v_buffer[i][indices] = v_data[i].to(self.device)
+
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         copy_all_layer_kv_cache[(len(self.data_ptrs),)](
             self.data_ptrs,
