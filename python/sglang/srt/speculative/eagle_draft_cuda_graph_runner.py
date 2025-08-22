@@ -305,7 +305,6 @@ class EAGLEDraftCudaGraphRunner:
             self.out_cache_loc.zero_()
 
         num_tokens = bs * self.num_tokens_per_bs
-        sync()
 
         # Common inputs
         self.req_pool_indices[:raw_bs].copy_(forward_batch.req_pool_indices)
@@ -361,6 +360,8 @@ class EAGLEDraftCudaGraphRunner:
         # Replay
         self.graphs[self.bs].replay()
         out = self.output_buffers[self.bs]
+
+        sync()
 
         if self.bs != self.raw_bs:
             out = self._postprocess_output_to_raw_bs(out, self.raw_bs)

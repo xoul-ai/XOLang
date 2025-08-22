@@ -412,6 +412,22 @@ class EAGLEWorker(TpModelWorker):
         verify_done = torch.cuda.Event()
         verify_done.record()
 
+        # Move the accepted tokens to the target KV cache locations
+        batch.seq_lens = seq_lens_backup
+        self.move_accepted_tokens_to_target_kvcache(
+            batch,
+            accept_index,
+            accept_length,
+        )
+        all_verified_id = predict[accept_index]
+        verified_id = torch.empty_like(accept_length, dtype=torch.int32)
+        fill_new_verified_id[(bs,)](
+            all_verified_id,
+            accept_length,
+            verified_id,
+            next_power_of_2(max(self.num_steps + 1, bs)),
+        )
+
         # Batch 2: Draft extend
         draft_input = EagleDraftInput(
             hidden_states=logits_output.hidden_states,
@@ -448,29 +464,18 @@ class EAGLEWorker(TpModelWorker):
         probs = torch.softmax(logits_output_2.next_token_logits, dim=-1)
         ret_topk_p, ret_topk_index = fast_topk(probs, self.topk, dim=-1)
         ret_hidden_states = logits_output_2.hidden_states
-        verified_id = predict[accept_index]
-        next_batch_verified_id = torch.empty_like(accept_length, dtype=torch.int32)
-        fill_new_verified_id[(bs,)](
-            verified_id,
-            accept_length,
-            next_batch_verified_id,
-            next_power_of_2(max(self.num_steps + 1, bs)),
-        )
 
-        # Move the accepted tokens to the target KV cache
-        batch.seq_lens = seq_lens_backup
-        self.move_accepted_tokens_to_target_kvcache(
-            batch,
-            accept_index,
-            accept_length,
-        )
+        # Since seq_lens_backup's tensor is allocated in another stream, we
+        # need record_stream() to prevent pytorch gc and reuse the gpu memory
+        # while forward_stream is still running.
+        seq_lens_backup.record_stream(torch.cuda.current_stream())
 
         # Construct the return values
         draft_input = EagleDraftInput(
             topk_p=ret_topk_p,
             topk_index=ret_topk_index,
             hidden_states=ret_hidden_states,
-            verified_id=next_batch_verified_id,
+            verified_id=verified_id,
             new_seq_lens=new_seq_lens,
             allocate_lens=old_spec_info.allocate_lens,
             verify_done=verify_done,
