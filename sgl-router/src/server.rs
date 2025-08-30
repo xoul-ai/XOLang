@@ -1,7 +1,8 @@
 use crate::config::RouterConfig;
 use crate::logging::{self, LoggingConfig};
 use crate::metrics::{self, PrometheusConfig};
-use crate::openai_api_types::{ChatCompletionRequest, CompletionRequest, GenerateRequest};
+use crate::middleware::TokenBucket;
+use crate::protocols::spec::{ChatCompletionRequest, CompletionRequest, GenerateRequest};
 use crate::routers::{RouterFactory, RouterTrait};
 use crate::service_discovery::{start_service_discovery, ServiceDiscoveryConfig};
 use axum::{
@@ -22,27 +23,35 @@ use tokio::spawn;
 use tracing::{error, info, warn, Level};
 
 #[derive(Clone)]
-pub struct AppState {
-    pub router: Arc<dyn RouterTrait>,
+pub struct AppContext {
     pub client: Client,
-    pub _concurrency_limiter: Arc<tokio::sync::Semaphore>,
+    pub router_config: RouterConfig,
+    pub rate_limiter: Arc<TokenBucket>,
+    // Future dependencies can be added here
 }
 
-impl AppState {
+impl AppContext {
     pub fn new(
         router_config: RouterConfig,
         client: Client,
         max_concurrent_requests: usize,
-    ) -> Result<Self, String> {
-        let router = RouterFactory::create_router(&router_config)?;
-        let router = Arc::from(router);
-        let concurrency_limiter = Arc::new(tokio::sync::Semaphore::new(max_concurrent_requests));
-        Ok(Self {
-            router,
+        rate_limit_tokens_per_second: Option<usize>,
+    ) -> Self {
+        let rate_limit_tokens = rate_limit_tokens_per_second.unwrap_or(max_concurrent_requests);
+        let rate_limiter = Arc::new(TokenBucket::new(max_concurrent_requests, rate_limit_tokens));
+        Self {
             client,
-            _concurrency_limiter: concurrency_limiter,
-        })
+            router_config,
+            rate_limiter,
+        }
     }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub router: Arc<dyn RouterTrait>,
+    pub context: Arc<AppContext>,
+    pub concurrency_queue_tx: Option<tokio::sync::mpsc::Sender<crate::middleware::QueuedRequest>>,
 }
 
 // Fallback handler for unmatched routes
@@ -60,23 +69,23 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn health(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    state.router.health(&state.client, req).await
+    state.router.health(req).await
 }
 
 async fn health_generate(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    state.router.health_generate(&state.client, req).await
+    state.router.health_generate(req).await
 }
 
 async fn get_server_info(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    state.router.get_server_info(&state.client, req).await
+    state.router.get_server_info(req).await
 }
 
 async fn v1_models(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    state.router.get_models(&state.client, req).await
+    state.router.get_models(req).await
 }
 
 async fn get_model_info(State(state): State<Arc<AppState>>, req: Request) -> Response {
-    state.router.get_model_info(&state.client, req).await
+    state.router.get_model_info(req).await
 }
 
 // Generation endpoints
@@ -86,10 +95,7 @@ async fn generate(
     headers: http::HeaderMap,
     Json(body): Json<GenerateRequest>,
 ) -> Response {
-    state
-        .router
-        .route_generate(&state.client, Some(&headers), &body)
-        .await
+    state.router.route_generate(Some(&headers), &body).await
 }
 
 async fn v1_chat_completions(
@@ -97,10 +103,7 @@ async fn v1_chat_completions(
     headers: http::HeaderMap,
     Json(body): Json<ChatCompletionRequest>,
 ) -> Response {
-    state
-        .router
-        .route_chat(&state.client, Some(&headers), &body)
-        .await
+    state.router.route_chat(Some(&headers), &body).await
 }
 
 async fn v1_completions(
@@ -108,10 +111,7 @@ async fn v1_completions(
     headers: http::HeaderMap,
     Json(body): Json<CompletionRequest>,
 ) -> Response {
-    state
-        .router
-        .route_completion(&state.client, Some(&headers), &body)
-        .await
+    state.router.route_completion(Some(&headers), &body).await
 }
 
 // Worker management endpoints
@@ -159,11 +159,11 @@ async fn remove_worker(
 }
 
 async fn flush_cache(State(state): State<Arc<AppState>>, _req: Request) -> Response {
-    state.router.flush_cache(&state.client).await
+    state.router.flush_cache().await
 }
 
 async fn get_loads(State(state): State<Arc<AppState>>, _req: Request) -> Response {
-    state.router.get_worker_loads(&state.client).await
+    state.router.get_worker_loads().await
 }
 
 pub struct ServerConfig {
@@ -190,7 +190,11 @@ pub fn build_app(
     let protected_routes = Router::new()
         .route("/generate", post(generate))
         .route("/v1/chat/completions", post(v1_chat_completions))
-        .route("/v1/completions", post(v1_completions));
+        .route("/v1/completions", post(v1_completions))
+        .route_layer(axum::middleware::from_fn_with_state(
+            app_state.clone(),
+            crate::middleware::concurrency_limit_middleware,
+        ));
 
     let public_routes = Router::new()
         .route("/liveness", get(liveness))
@@ -273,7 +277,7 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
 
     let client = Client::builder()
         .pool_idle_timeout(Some(Duration::from_secs(50)))
-        .pool_max_idle_per_host(100) // Increase from default of 1 to allow more concurrent connections
+        .pool_max_idle_per_host(500) // Increase to 500 connections per host
         .timeout(Duration::from_secs(config.request_timeout_secs))
         .connect_timeout(Duration::from_secs(10)) // Separate connection timeout
         .tcp_nodelay(true)
@@ -281,11 +285,39 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
         .build()
         .expect("Failed to create HTTP client");
 
-    let app_state = Arc::new(AppState::new(
+    // Create the application context with all dependencies
+    let app_context = Arc::new(AppContext::new(
         config.router_config.clone(),
         client.clone(),
         config.router_config.max_concurrent_requests,
-    )?);
+        config.router_config.rate_limit_tokens_per_second,
+    ));
+
+    // Create router with the context
+    let router = RouterFactory::create_router(&app_context).await?;
+
+    // Set up concurrency limiter with queue if configured
+    let (limiter, processor) = crate::middleware::ConcurrencyLimiter::new(
+        app_context.rate_limiter.clone(),
+        config.router_config.queue_size,
+        Duration::from_secs(config.router_config.queue_timeout_secs),
+    );
+
+    // Start queue processor if enabled
+    if let Some(processor) = processor {
+        tokio::spawn(processor.run());
+        info!(
+            "Started request queue with size: {}, timeout: {}s",
+            config.router_config.queue_size, config.router_config.queue_timeout_secs
+        );
+    }
+
+    // Create app state with router and context
+    let app_state = Arc::new(AppState {
+        router: Arc::from(router),
+        context: app_context.clone(),
+        concurrency_queue_tx: limiter.queue_tx.clone(),
+    });
     let router_arc = Arc::clone(&app_state.router);
 
     // Start the service discovery if enabled
