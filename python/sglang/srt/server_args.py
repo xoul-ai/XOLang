@@ -293,6 +293,7 @@ class ServerArgs:
     hicache_storage_backend: Optional[str] = None
     hicache_storage_prefetch_policy: str = "best_effort"
     hicache_storage_backend_extra_config: Optional[str] = None
+    cartridge_path: Optional[str] = None
 
     # Double Sparsity
     enable_double_sparsity: bool = False
@@ -1690,6 +1691,12 @@ class ServerArgs:
             type=str,
             default=ServerArgs.hicache_storage_backend_extra_config,
             help="A dictionary in JSON string format containing extra configuration for the storage backend.",
+        )
+        parser.add_argument(
+            "--cartridge-path",
+            type=str,
+            default=ServerArgs.cartridge_path,
+            help="A file containing cartridge data.",
         )
 
         # Double Sparsity

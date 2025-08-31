@@ -573,35 +573,6 @@ class Scheduler(
                     revision=server_args.revision,
                 )
 
-    def load_cartridge(self):
-        cartridge_data = torch.load(
-            "/home/xiezhq/Playground/cartridge.pt",
-            map_location="cpu",
-            weights_only=False,
-        )
-        layers = len(cartridge_data["trainable_keys"])
-        k_data = []
-        v_data = []
-        for layer_idx in range(layers):
-            trainable_keys = cartridge_data["trainable_keys"][layer_idx]
-            trainable_values = cartridge_data["trainable_values"][layer_idx]
-            fixed_keys = cartridge_data["fixed_keys"][layer_idx]
-            fixed_values = cartridge_data["fixed_values"][layer_idx]
-
-            # Concatenate keys and values for each layer
-            k_data.append(
-                torch.cat([fixed_keys, trainable_keys], dim=2)
-                .squeeze(0)
-                .transpose(0, 1)
-            )
-            v_data.append(
-                torch.cat([fixed_values, trainable_values], dim=2)
-                .squeeze(0)
-                .transpose(0, 1)
-            )
-
-        return k_data, v_data
-
     def init_memory_pool_and_cache(self):
         server_args = self.server_args
 
@@ -710,17 +681,14 @@ class Scheduler(
         embedding_cache_size = int(os.environ.get("SGLANG_VLM_CACHE_SIZE_MB", "100"))
         init_embedding_cache(embedding_cache_size * 1024 * 1024)
 
-        k_data, v_data = self.load_cartridge()
-        logger.info(
-            f"Loaded cartridge with {len(k_data)} layers. {k_data[0].shape=}, {v_data[0].shape=}"
-        )
-        num_tokens = k_data[0].shape[0]
-        indices = self.token_to_kv_pool_allocator.alloc(num_tokens)
-        self.token_to_kv_pool_allocator.get_kvcache().assign_cache(
-            k_data, v_data, indices
-        )
-        self.cartridge_token_ids = [i for i in range(num_tokens)]
-        self.tree_cache.insert(self.cartridge_token_ids, indices)
+        if server_args.cartridge_path:
+            from sglang.srt.mem_cache.cartridge_manager import CartridgeManager
+
+            self.cartridge_manager = CartridgeManager(self.tree_cache)
+            for cartridge_path in server_args.cartridge_path.split(","):
+                self.cartridge_manager.load_cartridge(cartridge_path)
+        else:
+            self.cartridge_manager = None
 
     def init_disaggregation(self):
         self.transfer_backend = TransferBackend(
@@ -1173,10 +1141,19 @@ class Scheduler(
                 # Use default bootstrap port
                 recv_req.bootstrap_port = self.server_args.disaggregation_bootstrap_port
 
+            if self.cartridge_manager is not None:
+                cartridge_keys = self.cartridge_manager.get_cartridge_keys()
+                # todo, only match the provided key
+                if len(cartridge_keys) > 0:
+                    cartridge_ids = self.cartridge_manager.get_cartridge_token_ids(
+                        cartridge_keys[0]
+                    )
+                    if cartridge_ids is not None:
+                        recv_req.input_ids = cartridge_ids + recv_req.input_ids
+
             req = Req(
                 recv_req.rid,
                 recv_req.input_text,
-                # self.cartridge_token_ids +
                 recv_req.input_ids,
                 recv_req.sampling_params,
                 return_logprob=recv_req.return_logprob,
