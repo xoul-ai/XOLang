@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 
+from sglang.srt.disaggregation.service_discovery import ServiceDiscovery, ServiceDiscoveryConfig
 from sglang.srt.disaggregation.utils import PDRegistryRequest
 from sglang.srt.utils import maybe_wrap_ipv6_address
 
@@ -179,6 +180,23 @@ class MiniLoadBalancer:
 
 app = FastAPI()
 load_balancer: Optional[MiniLoadBalancer] = None
+service_discovery: Optional[ServiceDiscovery] = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start service discovery on application startup."""
+    global service_discovery
+    if service_discovery:
+        await service_discovery.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop service discovery on application shutdown."""
+    global service_discovery
+    if service_discovery:
+        await service_discovery.stop()
 
 
 @app.get("/health")
@@ -259,6 +277,15 @@ async def get_server_info():
             "prefill": prefill_infos,
             "decode": decode_infos,
         }
+
+
+@app.get("/service_discovery_status")
+async def get_service_discovery_status():
+    """Get service discovery status and statistics."""
+    if service_discovery is None:
+        return {"enabled": False, "message": "Service discovery not configured"}
+    
+    return service_discovery.get_status()
 
 
 @app.get("/get_model_info")
@@ -432,9 +459,15 @@ async def register(obj: PDRegistryRequest):
     return Response(status_code=200)
 
 
-def run(prefill_configs, decode_addrs, host, port, timeout):
-    global load_balancer
+def run(prefill_configs, decode_addrs, host, port, timeout, service_discovery_config=None):
+    global load_balancer, service_discovery
     load_balancer = MiniLoadBalancer(prefill_configs, decode_addrs, timeout=timeout)
+    
+    # Initialize service discovery if configured
+    if service_discovery_config and service_discovery_config.enabled:
+        service_discovery = ServiceDiscovery(service_discovery_config, load_balancer)
+        logger.info("Service discovery initialized")
+    
     uvicorn.run(app, host=host, port=port)
 
 
