@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+
 import torch
 
 from sglang.srt.disaggregation.utils import DisaggregationMode
@@ -211,17 +212,27 @@ class SchedulerOutputProcessorMixin:
         self.num_generated_tokens += len(batch.reqs)
 
         if self.enable_overlap:
+            _t_resolve_begin = time.time()
             logits_output, next_token_ids, can_run_cuda_graph = (
                 self.tp_worker.resolve_last_batch_result(launch_done)
+            )
+            _t_resolve_end = time.time()
+            print(
+                f"SGLANG-TIME decode.resolve_last_batch_result: {_t_resolve_end - _t_resolve_begin:.6f}s, batch_reqs={len(batch.reqs)}"
             )
             next_token_logprobs = logits_output.next_token_logprobs
         elif batch.spec_algorithm.is_none():
             # spec decoding handles output logprobs inside verify process.
+            _t_tolist_begin = time.time()
             next_token_ids = next_token_ids.tolist()
             if batch.return_logprob:
                 next_token_logprobs = logits_output.next_token_logprobs.tolist()
+            _t_tolist_end = time.time()
+            print(
+                f"SGLANG-TIME decode.tolist_next_ids_logprobs: {_t_tolist_end - _t_tolist_begin:.6f}s, batch_reqs={len(batch.reqs)}"
+            )
 
-        _t_free_group_begin = time.time()   
+        _t_free_group_begin = time.time()
         self.token_to_kv_pool_allocator.free_group_begin()
         _t_free_group_begin_end = time.time()
         print(
@@ -232,6 +243,9 @@ class SchedulerOutputProcessorMixin:
         # NOTE: the length of reqs and next_token_ids don't match if it is spec decoding.
         # We should ignore using next_token_ids for spec decoding cases.
         _t_finish_loop = time.time()
+        finished_rids = []
+        finished_reasons_json = []
+        finished_output_lens = []
         for i, (req, next_token_id) in enumerate(zip(batch.reqs, next_token_ids)):
             if req.is_retracted:
                 continue
@@ -258,6 +272,12 @@ class SchedulerOutputProcessorMixin:
             if req.finished():
                 self.tree_cache.cache_finished_req(req)
                 req.time_stats.completion_time = time.time()
+                finished_rids.append(req.rid)
+                try:
+                    finished_reasons_json.append(req.finished_reason.to_json())
+                except Exception:
+                    finished_reasons_json.append(None)
+                finished_output_lens.append(len(req.output_ids))
 
             if req.return_logprob and batch.spec_algorithm.is_none():
                 # speculative worker handles logprob in speculative decoding
@@ -299,6 +319,10 @@ class SchedulerOutputProcessorMixin:
         print(
             f"SGLANG-TIME decode.finish_loop: {_t_finish_loop_end - _t_finish_loop:.6f}s, batch_reqs={len(batch.reqs)}"
         )
+        if finished_rids:
+            print(
+                f"SGLANG-TIME decode.finish_batch_summary: finished_ct={len(finished_rids)}, rids={finished_rids}, out_lens={finished_output_lens}, reasons={finished_reasons_json}"
+            )
 
         _t_set_next_batch_sampling_info_done = time.time()
         self.set_next_batch_sampling_info_done(batch)
@@ -331,10 +355,7 @@ class SchedulerOutputProcessorMixin:
         )
 
         self.forward_ct_decode = (self.forward_ct_decode + 1) % (1 << 30)
-        if (
-            self.current_scheduler_metrics_enabled()
-            and self.forward_ct_decode % self.server_args.decode_log_interval == 0
-        ):
+        if self.current_scheduler_metrics_enabled() and self.forward_ct_decode % 1 == 0:
             self.log_decode_stats(can_run_cuda_graph, running_batch=batch)
 
     def add_input_logprob_return_values(
@@ -563,6 +584,7 @@ class SchedulerOutputProcessorMixin:
             ) = None
 
         _t_collect_loop = time.time()
+        to_send_detail = []
         for req in reqs:
             if req is skip_req:
                 continue
@@ -617,6 +639,23 @@ class SchedulerOutputProcessorMixin:
                 read_offsets.append(read_offset)
                 output_ids.append(req.output_ids[send_token_offset:])
                 req.send_token_offset = len(req.output_ids)
+                try:
+                    _dec_len = len(
+                        decode_ids
+                        if self.model_config.is_multimodal_gen
+                        else decode_ids[req.send_decode_id_offset :]
+                    )
+                except Exception:
+                    _dec_len = -1
+                _out_len = len(output_ids[-1])
+                to_send_detail.append(
+                    {
+                        "rid": req.rid,
+                        "finished": req.finished_reason is not None,
+                        "decode_chunk_len": _dec_len,
+                        "output_chunk_len": _out_len,
+                    }
+                )
                 skip_special_tokens.append(req.sampling_params.skip_special_tokens)
                 spaces_between_special_tokens.append(
                     req.sampling_params.spaces_between_special_tokens
@@ -713,6 +752,11 @@ class SchedulerOutputProcessorMixin:
         print(
             f"SGLANG-TIME stream_output_generation.collect_loop: {_t_collect_loop_end - _t_collect_loop:.6f}s, to_send_reqs={len(rids)}"
         )
+        if to_send_detail:
+            _finished_ct = sum(1 for x in to_send_detail if x["finished"])
+            print(
+                f"SGLANG-TIME stream_output_generation.to_send_summary: finished_ct={_finished_ct}, streaming_ct={len(to_send_detail)-_finished_ct}, details={to_send_detail}"
+            )
 
         # Send to detokenizer
         if rids:

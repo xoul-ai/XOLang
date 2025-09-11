@@ -192,9 +192,7 @@ class SchedulerMetricsMixin:
             token_msg = f"#token: {num_used}, " f"token usage: {token_usage:.2f}, "
 
         if RECORD_STEP_TIME:
-            self.step_time_dict[num_running_reqs].append(
-                gap_latency / self.server_args.decode_log_interval
-            )
+            self.step_time_dict[num_running_reqs].append(gap_latency / 1)
 
         msg = f"Decode batch. #running-req: {num_running_reqs}, {token_msg}"
 

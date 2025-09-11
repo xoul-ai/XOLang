@@ -17,13 +17,13 @@ import dataclasses
 import logging
 import os
 import signal
+import time
 from collections import OrderedDict
 from typing import Dict, List, Union
 
 import psutil
 import setproctitle
 import zmq
-import time
 
 from sglang.srt.hf_transformers_utils import get_tokenizer
 from sglang.srt.managers.io_struct import (
@@ -118,18 +118,32 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
             _t_wait_begin = time.time()
             recv_obj = self.recv_from_scheduler.recv_pyobj()
             _t_wait_end = time.time()
-            print(f"SGLANG-TIME detok.recv_from_scheduler: {_t_wait_end - _t_wait_begin:.6f}s")
+            print(
+                f"SGLANG-TIME detok.recv_from_scheduler: {_t_wait_end - _t_wait_begin:.6f}s"
+            )
 
             _t_dispatch_begin = time.time()
             output = self._request_dispatcher(recv_obj)
             _t_dispatch_end = time.time()
-            print(f"SGLANG-TIME detok.dispatch_handle: {_t_dispatch_end - _t_dispatch_begin:.6f}s, type={type(recv_obj).__name__}")
+            extra = ""
+            if isinstance(recv_obj, BatchTokenIDOut):
+                try:
+                    _rids = recv_obj.rids
+                    _fin = [fr is not None for fr in recv_obj.finished_reasons]
+                    extra = f", bs={len(_rids)}, finished_ct={sum(_fin)}"
+                except Exception:
+                    pass
+            print(
+                f"SGLANG-TIME detok.dispatch_handle: {_t_dispatch_end - _t_dispatch_begin:.6f}s, type={type(recv_obj).__name__}{extra}"
+            )
 
             if output is not None:
                 _t_send_begin = time.time()
                 self.send_to_tokenizer.send_pyobj(output)
                 _t_send_end = time.time()
-                print(f"SGLANG-TIME detok.send_to_tokenizer: {_t_send_end - _t_send_begin:.6f}s")
+                print(
+                    f"SGLANG-TIME detok.send_to_tokenizer: {_t_send_end - _t_send_begin:.6f}s"
+                )
 
     def trim_matched_stop(
         self, output: Union[str, List[int]], finished_reason: Dict, no_stop_trim: bool
