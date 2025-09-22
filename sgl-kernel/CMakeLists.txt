@@ -340,10 +340,29 @@ foreach(src ${ABS_SOURCES})
     endif()
 endforeach()
 
+set(ALL_INCLUDE_DIRS
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/csrc
+    ${repo-cutlass_SOURCE_DIR}/include
+    ${repo-cutlass_SOURCE_DIR}/tools/util/include
+    ${repo-flashinfer_SOURCE_DIR}/include
+    ${repo-flashinfer_SOURCE_DIR}/csrc
+    ${repo-mscclpp_SOURCE_DIR}/include
+    ${repo-cutlass_SOURCE_DIR}/examples/77_blackwell_fmha
+    ${repo-cutlass_SOURCE_DIR}/examples/common
+    ${repo-flash-attention_SOURCE_DIR}/csrc/flash_attn/src
+)
+list(APPEND ALL_INCLUDE_DIRS ${TORCH_INCLUDE_DIRS})
+
+set(INCLUDE_FLAGS "")
+foreach(dir ${ALL_INCLUDE_DIRS})
+    list(APPEND INCLUDE_FLAGS "-I${dir}")
+endforeach()
+
 set(DEVICE_OBJECTS "")
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/obj)
 
-set(CUDA_FLAGS_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS} "-use_fast_math")
+set(CUDA_FLAGS_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS} ${INCLUDE_FLAGS} "-use_fast_math")
 foreach(ARCH ${ARCHS_WITH_FAST_MATH})
     set(ARCH_FLAG "-gencode=arch=compute_${ARCH},code=sm_${ARCH}")
     foreach(SRC_FILE ${SGL_CU_SOURCES})
@@ -360,7 +379,7 @@ foreach(ARCH ${ARCHS_WITH_FAST_MATH})
     endforeach()
 endforeach()
 
-set(CUDA_FLAGS_NO_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS})
+set(CUDA_FLAGS_NO_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS} ${INCLUDE_FLAGS})
 foreach(ARCH ${ARCHS_WITHOUT_FAST_MATH})
     set(ARCH_FLAG "-gencode=arch=compute_${ARCH},code=sm_${ARCH}")
     foreach(SRC_FILE ${SGL_CU_SOURCES})
