@@ -353,6 +353,7 @@ set(ALL_INCLUDE_DIRS
     ${repo-flash-attention_SOURCE_DIR}/csrc/flash_attn/src
 )
 list(APPEND ALL_INCLUDE_DIRS ${TORCH_INCLUDE_DIRS})
+list(APPEND ALL_INCLUDE_DIRS ${Python_INCLUDE_DIRS})
 
 set(INCLUDE_FLAGS "")
 foreach(dir ${ALL_INCLUDE_DIRS})
