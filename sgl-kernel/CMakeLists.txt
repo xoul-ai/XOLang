@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.26 FATAL_ERROR)
 project(sgl-kernel LANGUAGES CXX CUDA)
 
+message(STATUS "111111111")
+
 # CMake
 cmake_policy(SET CMP0169 OLD)
 cmake_policy(SET CMP0177 NEW)
@@ -140,13 +142,12 @@ include_directories(
     ${repo-mscclpp_SOURCE_DIR}/include
 )
 
-set(SGL_KERNEL_CUDA_FLAGS
+set(SGL_KERNEL_CUDA_FLAGS_BASE
     "-DNDEBUG"
     "-DOPERATOR_NAMESPACE=sgl-kernel"
     "-O3"
     "-Xcompiler"
     "-fPIC"
-    "-gencode=arch=compute_90,code=sm_90"
     "-std=c++17"
     "-DFLASHINFER_ENABLE_F16"
     "-DCUTE_USE_PACKED_TUPLE=1"
@@ -188,6 +189,7 @@ elseif (SGL_KERNEL_COMPILE_THREADS LESS 1)
     set(SGL_KERNEL_COMPILE_THREADS 1)
 endif()
 
+set(SGL_KERNEL_CUDA_FLAGS ${SGL_KERNEL_CUDA_FLAGS_BASE})
 list(APPEND SGL_KERNEL_CUDA_FLAGS
     "--threads=${SGL_KERNEL_COMPILE_THREADS}"
 )
@@ -213,51 +215,36 @@ if (SGL_KERNEL_ENABLE_FP8)
     )
 endif()
 
-if (ENABLE_BELOW_SM90)
-    list(APPEND SGL_KERNEL_CUDA_FLAGS
-        "-gencode=arch=compute_80,code=sm_80"
-        "-gencode=arch=compute_89,code=sm_89"
-    )
-endif()
-
-if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
-    list(APPEND SGL_KERNEL_CUDA_FLAGS
-        "-gencode=arch=compute_100a,code=sm_100a"
-        "-gencode=arch=compute_120a,code=sm_120a"
-    )
-
-    # refer sm_121, sm_110 and sm_101 description  https://github.com/pytorch/pytorch/pull/156176
-    if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "13.0")
-        list(APPEND SGL_KERNEL_CUDA_FLAGS
-            "-gencode=arch=compute_103a,code=sm_103a"
-            "-gencode=arch=compute_110a,code=sm_110a"
-            "-gencode=arch=compute_121a,code=sm_121a"
-            "--compress-mode=size"
-        )
-    else()
-        list(APPEND SGL_KERNEL_CUDA_FLAGS
-            "-gencode=arch=compute_101a,code=sm_101a"
-        )
-    endif()
-
-else()
-    list(APPEND SGL_KERNEL_CUDA_FLAGS
-        "-use_fast_math"
-    )
-endif()
-
-if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.4" OR SGL_KERNEL_ENABLE_SM90A)
-    set(SGL_KERNEL_ENABLE_FA3 ON)
-    list(APPEND SGL_KERNEL_CUDA_FLAGS
-        "-gencode=arch=compute_90a,code=sm_90a"
-    )
-endif()
-
 if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_FP4)
     list(APPEND SGL_KERNEL_CUDA_FLAGS
         "-DENABLE_NVFP4=1"
     )
 endif()
+
+set(ARCHS_WITH_FAST_MATH)
+set(ARCHS_WITHOUT_FAST_MATH)
+
+if(ENABLE_BELOW_SM90)
+    list(APPEND ARCHS_WITH_FAST_MATH "80" "89")
+endif()
+list(APPEND ARCHS_WITH_FAST_MATH "90")
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.4" OR SGL_KERNEL_ENABLE_SM90A)
+    set(SGL_KERNEL_ENABLE_FA3 ON)
+    list(APPEND ARCHS_WITH_FAST_MATH "90a")
+endif()
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND ARCHS_WITHOUT_FAST_MATH "100a" "120a")
+    if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "13.0")
+        list(APPEND ARCHS_WITHOUT_FAST_MATH "103a" "110a" "121a")
+    else()
+        list(APPEND ARCHS_WITHOUT_FAST_MATH "101a")
+    endif()
+endif()
+
+set(ARCHS_ALL ${ARCHS_WITH_FAST_MATH} ${ARCHS_WITHOUT_FAST_MATH})
+list(REMOVE_DUPLICATES ARCHS_ALL)
 
 set(SOURCES
     "csrc/allreduce/custom_all_reduce.cu"
@@ -334,7 +321,79 @@ set(SOURCES
     "${repo-flash-attention_SOURCE_DIR}/csrc/flash_attn/flash_sparse_api.cpp"
 )
 
-Python_add_library(common_ops MODULE USE_SABI ${SKBUILD_SABI_VERSION} WITH_SOABI ${SOURCES})
+set(ABS_SOURCES)
+foreach(src ${SOURCES})
+    if(IS_ABSOLUTE ${src})
+        list(APPEND ABS_SOURCES ${src})
+    else()
+        list(APPEND ABS_SOURCES "${PROJECT_SOURCE_DIR}/${src}")
+    endif()
+endforeach()
+
+set(SGL_CU_SOURCES)
+set(SGL_CXX_SOURCES)
+foreach(src ${ABS_SOURCES})
+    if(src MATCHES ".*\\.cu$")
+        list(APPEND SGL_CU_SOURCES ${src})
+    else()
+        list(APPEND SGL_CXX_SOURCES ${src})
+    endif()
+endforeach()
+
+set(DEVICE_OBJECTS "")
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/obj)
+
+set(CUDA_FLAGS_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS} "-use_fast_math")
+foreach(ARCH ${ARCHS_WITH_FAST_MATH})
+    set(ARCH_FLAG "-gencode=arch=compute_${ARCH},code=sm_${ARCH}")
+    foreach(SRC_FILE ${SGL_CU_SOURCES})
+        get_filename_component(SRC_NAME ${SRC_FILE} NAME_WE)
+        set(OBJ_FILE "${CMAKE_CURRENT_BINARY_DIR}/obj/${SRC_NAME}_${ARCH}.o")
+        add_custom_command(
+            OUTPUT ${OBJ_FILE}
+            COMMAND ${CMAKE_CUDA_COMPILER}
+            ARGS --device-c -Xcompiler -fPIC ${CUDA_FLAGS_FAST_MATH} ${ARCH_FLAG} ${SRC_FILE} -o ${OBJ_FILE}
+            DEPENDS ${SRC_FILE}
+            COMMENT "Compiling ${SRC_FILE} for sm_${ARCH} with fast math"
+        )
+        list(APPEND DEVICE_OBJECTS ${OBJ_FILE})
+    endforeach()
+endforeach()
+
+set(CUDA_FLAGS_NO_FAST_MATH ${SGL_KERNEL_CUDA_FLAGS})
+foreach(ARCH ${ARCHS_WITHOUT_FAST_MATH})
+    set(ARCH_FLAG "-gencode=arch=compute_${ARCH},code=sm_${ARCH}")
+    foreach(SRC_FILE ${SGL_CU_SOURCES})
+        get_filename_component(SRC_NAME ${SRC_FILE} NAME_WE)
+        set(OBJ_FILE "${CMAKE_CURRENT_BINARY_DIR}/obj/${SRC_NAME}_${ARCH}.o")
+        add_custom_command(
+            OUTPUT ${OBJ_FILE}
+            COMMAND ${CMAKE_CUDA_COMPILER}
+            ARGS --device-c -Xcompiler -fPIC ${CUDA_FLAGS_NO_FAST_MATH} ${ARCH_FLAG} ${SRC_FILE} -o ${OBJ_FILE}
+            DEPENDS ${SRC_FILE}
+            COMMENT "Compiling ${SRC_FILE} for sm_${ARCH} without fast math"
+        )
+        list(APPEND DEVICE_OBJECTS ${OBJ_FILE})
+    endforeach()
+endforeach()
+
+set(FAT_BINARY_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/sgl_kernel_device.o")
+set(LINKER_ARCH_FLAGS "")
+foreach(ARCH ${ARCHS_ALL})
+    list(APPEND LINKER_ARCH_FLAGS "-gencode=arch=compute_${ARCH},code=sm_${ARCH}")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${FAT_BINARY_OBJECT}
+    COMMAND ${CMAKE_CUDA_COMPILER}
+    ARGS --device-link ${DEVICE_OBJECTS} -o ${FAT_BINARY_OBJECT} ${LINKER_ARCH_FLAGS}
+    DEPENDS ${DEVICE_OBJECTS}
+    COMMENT "Linking device code"
+)
+add_custom_target(sgl_kernel_device_code DEPENDS ${FAT_BINARY_OBJECT})
+
+Python_add_library(common_ops MODULE USE_SABI ${SKBUILD_SABI_VERSION} WITH_SOABI ${SGL_CXX_SOURCES} ${FAT_BINARY_OBJECT})
+add_dependencies(common_ops sgl_kernel_device_code)
 
 target_compile_options(common_ops PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${SGL_KERNEL_CUDA_FLAGS}>)
 target_include_directories(common_ops PRIVATE
