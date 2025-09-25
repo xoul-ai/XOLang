@@ -27,7 +27,11 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VisionRotaryEmbedding,
 )
 
-from sglang.srt.configs.qwen3_vl import Qwen3VLConfig, Qwen3VLVisionConfig
+from sglang.srt.configs.qwen3_vl import (
+    Qwen3VLConfig,
+    Qwen3VLTextConfig,
+    Qwen3VLVisionConfig,
+)
 from sglang.srt.hf_transformers_utils import get_processor
 from sglang.srt.layers.attention.vision import VisionAttention
 from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
@@ -44,12 +48,17 @@ from sglang.srt.managers.schedule_batch import (
     MultimodalDataItem,
     MultimodalInputs,
 )
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_batch_info import (
+    ForwardBatch,
+    ForwardMode,
+    PPProxyTensors,
+)
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
 logger = logging.getLogger(__name__)
+
 
 # === Vision Encoder === #
 
@@ -611,7 +620,7 @@ class Qwen3VLForConditionalGeneration(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.config = config
+        self.config: Qwen3VLConfig = config
         self.visual = Qwen3VLMoeVisionModel(
             config.vision_config,
             # NOTE: Qwen3-VL vision encoder currently supports BitsAndBytes 4-bit quantization.
@@ -622,23 +631,24 @@ class Qwen3VLForConditionalGeneration(nn.Module):
         )
 
         self.model = language_model_cls(
-            config=config,
+            # config=config,
+            config=config.text_config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
 
-        if config.tie_word_embeddings:
+        if config.text_config.tie_word_embeddings:
             self.lm_head = self.model.embed_tokens
         else:
             self.lm_head = ParallelLMHead(
-                config.vocab_size,
-                config.hidden_size,
+                config.text_config.vocab_size,
+                config.text_config.hidden_size,
                 quant_config=quant_config,
                 prefix=add_prefix("lm_head", prefix),
             )
-        self.is_mrope_enabled = "mrope_section" in self.config.rope_scaling
+        self.is_mrope_enabled = "mrope_section" in self.config.text_config.rope_scaling
 
-        self.logits_processor = LogitsProcessor(config)
+        self.logits_processor = LogitsProcessor(config.text_config)
         self.pooler = Pooler(pooling_type=PoolingType.LAST, normalize=True)
         # like {8:0, 16:1, 24:2}, which stands for the captured deepstack features on
         # 8, 16, 24 layer will be merged to 0, 1, 2 layer of decoder output hidden_states
@@ -654,7 +664,7 @@ class Qwen3VLForConditionalGeneration(nn.Module):
             embedding.shape[-1] % (1 + self.num_deepstack_embeddings) == 0
         ), f"hidden_state of {embedding.shape} should be divisible by ({1 + self.num_deepstack_embeddings})"
 
-        separate_index = self.config.hidden_size
+        separate_index = self.config.text_config.hidden_size
         input_embeds = embedding[:, :separate_index]
         input_deepstack_embeds = embedding[:, separate_index:]
         return input_embeds, input_deepstack_embeds
@@ -711,6 +721,8 @@ class Qwen3VLForConditionalGeneration(nn.Module):
         """
         if self.is_mrope_enabled:
             positions = forward_batch.mrope_positions
+            if forward_batch.forward_mode == ForwardMode.EXTEND:
+                print(f"{forward_batch.mrope_positions=}")
 
         if not (
             forward_batch.forward_mode.is_decode()
