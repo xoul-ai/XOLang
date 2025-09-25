@@ -91,7 +91,7 @@ class Qwen3MoeLLMModel(Qwen3MoeModel):
             )
 
             # process deepstack
-            if input_deepstack_embeds is not None and layer_idx in range(3):
+            if input_deepstack_embeds is not None and layer_idx < 3:
                 sep = self.hidden_size * layer_idx
                 hidden_states = (
                     hidden_states
