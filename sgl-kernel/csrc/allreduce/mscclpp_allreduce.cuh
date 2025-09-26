@@ -21,10 +21,10 @@
 
 namespace sglang {
 
-__device__ mscclpp::DeviceSyncer deviceSyncer;
-__device__ mscclpp::DeviceSyncer allGatherDeviceSyncer;
-__device__ mscclpp::DeviceSyncer reduceScatterDeviceSyncer;
-__device__ mscclpp::DeviceSyncer ibDeviceSyncer;
+static __device__ mscclpp::DeviceSyncer deviceSyncer;
+static __device__ mscclpp::DeviceSyncer allGatherDeviceSyncer;
+static __device__ mscclpp::DeviceSyncer reduceScatterDeviceSyncer;
+static __device__ mscclpp::DeviceSyncer ibDeviceSyncer;
 
 template <typename To, typename From>
 __forceinline__ __device__ To bit_cast(const From& src) {
