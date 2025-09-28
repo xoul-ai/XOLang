@@ -1,9 +1,9 @@
-
 class MemoryLocation:
     base_ptr: int
     stride: int
     indices: torch.Tensor
     tensor: torch.Tensor
+
 
 class PhysicalMemoryPool:
     def __init__(self, size: int):
