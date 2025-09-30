@@ -108,12 +108,22 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             best_k = 0
             for k in range(max_search, allow, -1):
                 suffix = tail[-k:]
-                idx = _find_subsequence(prefix, suffix)
-                if idx != -1:
-                    j = idx + k
-                    if j < len(hist):
-                        candidate = hist[j]
+                indices = _find_all_subsequence(prefix, suffix)
+                if indices:
+                    candidates = []
+                    for idx in indices:
+                        j = idx + k
+                        if j < len(hist):
+                            candidates.append(hist[j])
+                    if candidates:
                         best_k = k
+                        for candidate_token in set(candidates):
+                            pen = mult * (base ** best_k)
+                            try:
+                                if pen > 0.0 and 0 <= candidate_token < logits.shape[1]:
+                                    logits[i, candidate_token] -= float(math.log1p(pen))
+                            except Exception:
+                                pass
                         break
             if candidate is None or best_k <= 0:
                 continue
