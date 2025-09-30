@@ -146,6 +146,12 @@ class OpenAIServingCompletion(OpenAIServingBase):
                 request.response_format.model_dump(by_alias=True)
             )
 
+        # merge custom params from top-level and extra_body (OpenAI SDK)
+        if getattr(request, "custom_params", None) is not None:
+            sampling_params["custom_params"] = request.custom_params
+        eb = getattr(request, "extra_body", None)
+        if isinstance(eb, dict) and eb.get("custom_params") is not None:
+            sampling_params["custom_params"] = eb["custom_params"]
         return sampling_params
 
     async def _handle_streaming_request(

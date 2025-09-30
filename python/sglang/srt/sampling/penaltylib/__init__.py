@@ -9,3 +9,5 @@ __all__ = [
     "BatchedPresencePenalizer",
     "BatchedPenalizerOrchestrator",
 ]
+
+from sglang.srt.sampling.penaltylib.dry import BatchedDRYPenalizer
