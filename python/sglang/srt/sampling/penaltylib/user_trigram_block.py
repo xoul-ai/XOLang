@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import logging
 
 from sglang.srt.sampling.penaltylib.orchestrator import (
     BatchedPenalizerOrchestrator,
@@ -34,6 +35,7 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
         # Per-request data
         self._pair2next: List[Optional[Dict[Tuple[int, int], List[int]]]] = []
         self._max_tokens: List[int] = []
+        self._logger = logging.getLogger(__name__)
 
     def _is_required(self) -> bool:
         reqs = self.orchestrator.reqs()
@@ -46,9 +48,6 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
         return False
 
     def _prepare(self):
-        batch = self.orchestrator.batch
-        tokenizer = getattr(batch, "tokenizer", None)
-
         self._pair2next = []
         self._max_tokens = []
 
@@ -69,23 +68,50 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
             ids = cp.get("ban_user_trigrams_ids")
             if ids is None:
                 text = cp.get("ban_user_trigrams_text")
-                if isinstance(text, str) and text.strip() and tokenizer is not None:
+                if isinstance(text, str) and text.strip():
+                    tokenizer = getattr(req, "tokenizer", None)
                     try:
-                        ids = tokenizer.encode(text, add_special_tokens=False)
+                        if tokenizer is not None:
+                            ids = tokenizer.encode(text, add_special_tokens=False)
+                        else:
+                            ids = None
                     except Exception:
                         ids = None
 
             if isinstance(ids, list) and len(ids) >= 3:
                 pair2next = {}
-                for i in range(len(ids) - 2):
-                    p = (int(ids[i]), int(ids[i + 1]))
-                    nxt = int(ids[i + 2])
-                    if p not in pair2next:
-                        pair2next[p] = [nxt]
-                    else:
-                        pair2next[p].append(nxt)
+                def add_trigrams(seq: List[int]):
+                    for j in range(len(seq) - 2):
+                        p = (int(seq[j]), int(seq[j + 1]))
+                        nxt = int(seq[j + 2])
+                        if p not in pair2next:
+                            pair2next[p] = [nxt]
+                        else:
+                            pair2next[p].append(nxt)
+                add_trigrams(ids)
+                # Also consider a leading-space variant to match common generation prefixes
+                try:
+                    tokenizer = getattr(req, "tokenizer", None)
+                    if tokenizer is not None:
+                        ids2 = tokenizer.encode(" " + text, add_special_tokens=False)
+                        if isinstance(ids2, list) and len(ids2) >= 3:
+                            add_trigrams(ids2)
+                except Exception:
+                    pass
 
             self._pair2next.append(pair2next)
+
+        # Log summary once per batch
+        try:
+            enabled = sum(1 for m in self._pair2next if m)
+            self._logger.info(
+                "User trigram blocker prepared: %d/%d active, limits=%s",
+                enabled,
+                len(self._pair2next),
+                self._max_tokens,
+            )
+        except Exception:
+            pass
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         # Not required; we read per-request histories directly in _apply.
@@ -122,6 +148,20 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
             for t3 in next_list:
                 if 0 <= t3 < V:
                     logits[i, t3] = -float("inf")
+            # Optional debug: show first block action for a req
+            try:
+                if hasattr(req, "_utb_logged") is False or getattr(req, "_utb_logged", False) is False:
+                    setattr(req, "_utb_logged", True)
+                    self._logger.debug(
+                        "Blocked user trigram at step=%d for rid=%s, last2=(%d,%d), blocked_next=%s",
+                        len(req.output_ids),
+                        getattr(req, "rid", ""),
+                        t1,
+                        t2,
+                        next_list,
+                    )
+            except Exception:
+                pass
 
         return logits
 
@@ -133,4 +173,3 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
     def _merge(self, their: "BatchedUserTrigramBlocker"):
         self._pair2next.extend(their._pair2next)
         self._max_tokens.extend(their._max_tokens)
-
