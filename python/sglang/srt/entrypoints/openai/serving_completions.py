@@ -176,8 +176,9 @@ class OpenAIServingCompletion(OpenAIServingBase):
             if n < 3:
                 n = 3
             tok = self.tokenizer_manager.tokenizer
-            ids: List[int] = tok.encode(text, add_special_tokens=False)
-            if not ids or len(ids) < n:
+            ids_main: List[int] = tok.encode(text, add_special_tokens=False)
+            ids_pref: List[int] = tok.encode(" " + text, add_special_tokens=False)
+            if (not ids_main or len(ids_main) < n) and (not ids_pref or len(ids_pref) < n):
                 return
 
             def is_punct_only(span: List[int]) -> bool:
@@ -190,18 +191,28 @@ class OpenAIServingCompletion(OpenAIServingBase):
             pair_to_next: Dict[tuple, set] = {}
             CAP = 3000
             edges = 0
-            for i in range(len(ids) - n + 1):
-                span = ids[i : i + n]
-                if is_punct_only(span):
-                    continue
-                key = tuple(int(x) for x in span[:-1])
-                nxt = int(span[-1])
-                s = pair_to_next.setdefault(key, set())
-                if nxt not in s:
-                    s.add(nxt)
-                    edges += 1
-                    if edges >= CAP:
-                        break
+
+            def add_spans(token_ids: List[int]):
+                nonlocal edges
+                for i in range(len(token_ids) - n + 1):
+                    span = token_ids[i : i + n]
+                    if is_punct_only(span):
+                        continue
+                    key = tuple(int(x) for x in span[:-1])
+                    nxt = int(span[-1])
+                    s = pair_to_next.setdefault(key, set())
+                    if nxt not in s:
+                        s.add(nxt)
+                        edges += 1
+                        if edges >= CAP:
+                            return True
+                return False
+
+            if ids_main and len(ids_main) >= n:
+                if add_spans(ids_main):
+                    pass
+            if edges < CAP and ids_pref and len(ids_pref) >= n:
+                add_spans(ids_pref)
             if not pair_to_next:
                 return
             cp = dict(cp)
