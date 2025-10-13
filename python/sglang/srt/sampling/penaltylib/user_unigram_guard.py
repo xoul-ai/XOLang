@@ -69,7 +69,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
     """
 
     # Start delimiters that define a start position when they are the last non-space char
-    _SENTENCE_END_CHARS = {".", "!", "?", "\n"}
+    _SENTENCE_END_CHARS = {".", "!", "?", "\n", "…"}
     _OPENING_QUOTES = {'"', "“", "‘", "'", "*"}
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
@@ -306,8 +306,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if tokenizer is None:
             return False
 
-        # Decode up to the last 3 tokens to capture punctuation even if split
-        n = min(3, len(req.output_ids))
+        # Decode up to the last 12 tokens to capture punctuation even if split/merged
+        n = min(12, len(req.output_ids))
         try:
             tail = tokenizer.decode(req.output_ids[-n:])
         except Exception:
@@ -328,10 +328,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         ch = tail[i]
         is_start = ch in self._OPENING_QUOTES or ch in self._SENTENCE_END_CHARS
         logger.info(
-            "[UnigramGuard][rid=%s] is_start_position=%s last_char=%r tail=%r",
+            "[UnigramGuard][rid=%s] is_start_position=%s last_char=%r tail=%r (n=%d)",
             getattr(req, "rid", "<unknown>"),
             is_start,
             ch,
             tail,
+            n,
         )
         return is_start
