@@ -36,7 +36,11 @@ class BatchedUserTrigramBlockPenalizer(_BatchedPenalizer):
             return False
         for req in reqs:
             cp = getattr(req.sampling_params, "custom_params", None)
-            if isinstance(cp, dict) and cp.get("ban_user_trigrams_ids"):
+            if not isinstance(cp, dict):
+                continue
+            if cp.get("ban_user_pair_to_next_map"):
+                return True
+            if cp.get("ban_user_trigrams_ids"):
                 return True
         return False
 
