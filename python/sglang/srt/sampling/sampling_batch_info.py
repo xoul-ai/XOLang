@@ -142,6 +142,7 @@ class SamplingBatchInfo:
         # While we can choose not to even create the class instances if they are not required, this
         # could add additional complexity to the {ScheduleBatch} class, especially we need to
         # handle {filter_batch()} and {merge_batch()} cases as well.
+        # Initialize penalizers; optional ones self-disable if not required
         penalizer_orchestrator = penaltylib.BatchedPenalizerOrchestrator(
             vocab_size=vocab_size,
             batch=batch,
@@ -150,8 +151,24 @@ class SamplingBatchInfo:
                 penaltylib.BatchedMinNewTokensPenalizer,
                 penaltylib.BatchedPresencePenalizer,
                 penaltylib.BatchedDRYPenalizer,
+                penaltylib.BatchedUserUnigramStartGuardPenalizer,
             },
         )
+
+        try:
+            num_unigram_reqs = sum(
+                1
+                for r in reqs
+                if isinstance(getattr(r.sampling_params, "custom_params", None), dict)
+                and (getattr(r.sampling_params, "custom_params").get("unigrams_text") is not None)
+            )
+            logger.info(
+                "[SamplingBatchInfo] Initialized penalizers; unigram_guard_candidates=%d batch_size=%d",
+                num_unigram_reqs,
+                len(reqs),
+            )
+        except Exception:
+            logger.exception("[SamplingBatchInfo] Counting unigram requests failed")
 
         ret = cls(
             temperatures=temperatures,
