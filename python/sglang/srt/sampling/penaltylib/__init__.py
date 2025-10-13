@@ -11,3 +11,6 @@ __all__ = [
 ]
 
 from sglang.srt.sampling.penaltylib.dry import BatchedDRYPenalizer
+from sglang.srt.sampling.penaltylib.user_trigram_block import (
+    BatchedUserTrigramBlocker,
+)
