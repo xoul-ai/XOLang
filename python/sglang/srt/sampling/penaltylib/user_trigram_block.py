@@ -80,15 +80,44 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                         ids = None
 
             if isinstance(ids, list) and len(ids) >= 3:
-                pair2next = {}
+                pair2next: Dict[Tuple[int, int], List[int]] = {}
+                tok = getattr(req, "tokenizer", None)
+
+                def add_block_for_pair(pair: Tuple[int, int], third_id: int, third_text: Optional[str]):
+                    lst = pair2next.get(pair)
+                    if lst is None:
+                        lst = []
+                        pair2next[pair] = lst
+                    if third_id not in lst:
+                        lst.append(third_id)
+                    # Also block single-token prefixes of the third text to prevent multi-token spillovers
+                    if tok is not None and isinstance(third_text, str) and len(third_text) > 0:
+                        # Preserve leading spaces from third_text
+                        leading = len(third_text) - len(third_text.lstrip(" "))
+                        base = third_text[:leading]
+                        core = third_text[leading:]
+                        for plen in range(1, len(core)):
+                            prefix_text = base + core[:plen]
+                            try:
+                                enc = tok.encode(prefix_text, add_special_tokens=False)
+                            except Exception:
+                                enc = None
+                            if isinstance(enc, list) and len(enc) == 1:
+                                cand = int(enc[0])
+                                if cand != third_id and cand not in lst:
+                                    lst.append(cand)
+
                 def add_trigrams(seq: List[int]):
                     for j in range(len(seq) - 2):
                         p = (int(seq[j]), int(seq[j + 1]))
                         nxt = int(seq[j + 2])
-                        if p not in pair2next:
-                            pair2next[p] = [nxt]
-                        else:
-                            pair2next[p].append(nxt)
+                        third_text = None
+                        try:
+                            if tok is not None:
+                                third_text = tok.decode([nxt])
+                        except Exception:
+                            third_text = None
+                        add_block_for_pair(p, nxt, third_text)
                 add_trigrams(ids)
                 if debug:
                     try:
@@ -98,6 +127,13 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                             "[UTB] rid=%s base_text_ids=%s base_text_tokens=%s",
                             getattr(req, "rid", ""), ids, toks
                         )
+                        # Log per-pair block list for visibility
+                        for pair, blocked in pair2next.items():
+                            blocked_str = [tok.decode([b]) if tok is not None else str(b) for b in blocked]
+                            self._logger.info(
+                                "[UTB] rid=%s pair=%s blocked_ids=%s blocked_tokens=%s",
+                                getattr(req, "rid", ""), pair, blocked, blocked_str
+                            )
                     except Exception:
                         pass
                 # Also consider a leading-space variant to match common generation prefixes
@@ -105,8 +141,8 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                     tokenizer = getattr(req, "tokenizer", None)
                     if tokenizer is not None:
                         ids2 = tokenizer.encode(" " + text, add_special_tokens=False)
-                        if isinstance(ids2, list) and len(ids2) >= 3:
-                            add_trigrams(ids2)
+                            if isinstance(ids2, list) and len(ids2) >= 3:
+                                add_trigrams(ids2)
                             if debug:
                                 try:
                                     toks2 = [tokenizer.decode([t]) for t in ids2]
@@ -114,6 +150,12 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                                         "[UTB] rid=%s space_text_ids=%s space_text_tokens=%s",
                                         getattr(req, "rid", ""), ids2, toks2
                                     )
+                                    for pair, blocked in pair2next.items():
+                                        blocked_str = [tokenizer.decode([b]) for b in blocked]
+                                        self._logger.info(
+                                            "[UTB] rid=%s pair=%s blocked_ids=%s blocked_tokens=%s",
+                                            getattr(req, "rid", ""), pair, blocked, blocked_str
+                                        )
                                 except Exception:
                                     pass
                 except Exception:
