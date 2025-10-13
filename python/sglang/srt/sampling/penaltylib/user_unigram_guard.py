@@ -70,7 +70,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     # Start delimiters that define a start position when they are the last non-space char
     _SENTENCE_END_CHARS = {".", "!", "?", "\n"}
-    _OPENING_QUOTES = {'"', "“", "‘", "*"}
+    _OPENING_QUOTES = {'"', "“", "‘", "'", "*"}
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
         self.orchestrator = orchestrator
@@ -184,6 +184,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     f'"{w}',
                     f"“{w}",
                     f"‘{w}",
+                    f"'{w}",
+                    f" '{w}",
                     f"*{w}",
                     f" *{w}",
                 )
