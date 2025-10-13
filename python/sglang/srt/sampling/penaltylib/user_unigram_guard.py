@@ -206,8 +206,21 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         ids = []
                     if not ids:
                         continue
-                    first_ids.add(int(ids[0]))
-                    prefixes.append(ids)
+                    # Skip leading tokens that are pure punctuation/space; pick first token with alpha
+                    first_idx = 0
+                    try:
+                        for j, tok in enumerate(ids):
+                            s = tokenizer.decode([tok])
+                            if re.search(r"[A-Za-z]", s):
+                                first_idx = j
+                                break
+                        tok_id = int(ids[first_idx])
+                        first_ids.add(tok_id)
+                        prefixes.append(ids[first_idx:])
+                    except Exception:
+                        # Fallback to the very first id if decode fails
+                        first_ids.add(int(ids[0]))
+                        prefixes.append(ids)
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
