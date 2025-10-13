@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Union, Set
 
 from fastapi import Request
 from fastapi.responses import ORJSONResponse, StreamingResponse
@@ -441,7 +441,72 @@ class OpenAIServingChat(OpenAIServingBase):
             for k in ["min_p", "top_k", "repetition_penalty"]:
                 if eb.get(k) is not None:
                     sampling_params[k] = eb[k]
+        # Build user n-gram mapping only from provided text
+        self._inject_user_ngram_block_mapping(sampling_params)
         return sampling_params
+
+    def _inject_user_ngram_block_mapping(self, sampling_params: Dict[str, Any]) -> None:
+        cp = sampling_params.get("custom_params")
+        if not isinstance(cp, dict):
+            return
+        text = cp.get("ban_user_trigrams_text")
+        if not isinstance(text, str) or not text.strip():
+            return
+        n = cp.get("ban_user_ngram_size", 3)
+        try:
+            n = int(n)
+        except Exception:
+            n = 3
+        if n < 3:
+            n = 3
+        tok = self.tokenizer_manager.tokenizer
+        prefixes = cp.get("ban_user_leading_prefixes")
+        if not isinstance(prefixes, list):
+            prefixes = ["", " ", "\n"]
+        else:
+            prefixes = [p for p in prefixes if isinstance(p, str)] or ["", " ", "\n"]
+
+        pair_to_next: Dict[str, Set[int]] = {}
+        CAP = 3000
+        edges = 0
+
+        def is_punct_only(span: List[int]) -> bool:
+            try:
+                s = "".join(tok.decode([t]) for t in span)
+            except Exception:
+                return False
+            return not any(ch.isalnum() for ch in s)
+
+        for pref in prefixes:
+            try:
+                ids = tok.encode(pref + text, add_special_tokens=False)
+            except Exception:
+                ids = None
+            if not ids or len(ids) < n:
+                continue
+            for i in range(len(ids) - n + 1):
+                span = ids[i : i + n]
+                if is_punct_only(span):
+                    continue
+                key = "|".join(str(int(x)) for x in span[:-1])
+                nxt = int(span[-1])
+                s = pair_to_next.setdefault(key, set())
+                if nxt not in s:
+                    s.add(nxt)
+                    edges += 1
+                    if edges >= CAP:
+                        break
+            if edges >= CAP:
+                break
+
+        if not pair_to_next:
+            return
+        mapping = {k: sorted(list(v)) for k, v in pair_to_next.items()}
+        cp = dict(cp)
+        cp["ban_user_pair_to_next_map"] = mapping
+        cp.setdefault("ban_user_trigram_max_tokens", 80)
+        cp.setdefault("ban_user_ngram_size", n)
+        sampling_params["custom_params"] = cp
 
     async def _handle_streaming_request(
         self,
