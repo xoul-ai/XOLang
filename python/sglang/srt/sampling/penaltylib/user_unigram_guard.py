@@ -70,7 +70,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     # Start delimiters that define a start position when they are the last non-space char
     _SENTENCE_END_CHARS = {".", "!", "?", "\n"}
-    _OPENING_QUOTES = {'"', "“", "‘"}
+    _OPENING_QUOTES = {'"', "“", "‘", "*"}
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
         self.orchestrator = orchestrator
@@ -174,8 +174,20 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
             for w in words_with_variants:
-                # Try both bare word and with leading space to handle sentence starts
-                for surface in (w, f" {w}"):
+                # Try common surfaces for sentence starts and quotes
+                # - bare word
+                # - leading space (start after punctuation/newline)
+                # - leading opening quote merged with the word
+                surfaces = (
+                    w,
+                    f" {w}",
+                    f'"{w}',
+                    f"“{w}",
+                    f"‘{w}",
+                    f"*{w}",
+                    f" *{w}",
+                )
+                for surface in surfaces:
                     try:
                         ids = tokenizer.encode(surface, add_special_tokens=False)
                     except Exception:
