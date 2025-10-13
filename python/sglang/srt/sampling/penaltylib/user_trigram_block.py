@@ -42,6 +42,8 @@ class BatchedUserTrigramBlockPenalizer(_BatchedPenalizer):
                 return True
             if cp.get("ban_user_trigrams_ids"):
                 return True
+            if isinstance(cp.get("ban_user_trigrams_text"), str) and cp.get("ban_user_trigrams_text").strip():
+                return True
         return False
 
     def _prepare(self):
@@ -95,6 +97,71 @@ class BatchedUserTrigramBlockPenalizer(_BatchedPenalizer):
                     if s:
                         norm[key] = s
                 pair_to_next.append(norm if norm else None)
+                max_tokens = cp.get("ban_user_trigram_max_tokens")
+                try:
+                    max_tokens = int(max_tokens) if max_tokens is not None else 80
+                except Exception:
+                    max_tokens = 80
+                if max_tokens < 0:
+                    max_tokens = 0
+                max_tokens_list.append(max_tokens)
+                n_list.append(n)
+                whitelist_list.append(whitelist)
+                continue
+
+            # Attempt to build mapping from provided text if present
+            text = cp.get("ban_user_trigrams_text")
+            built = False
+            if isinstance(text, str) and text.strip():
+                try:
+                    tokenizer = getattr(self.orchestrator.batch, "tokenizer", None)
+                    prefixes = cp.get("ban_user_leading_prefixes")
+                    if not isinstance(prefixes, list):
+                        prefixes = ["", " ", "\n"]
+                    else:
+                        prefixes = [p for p in prefixes if isinstance(p, str)] or ["", " ", "\n"]
+                    mp: Dict[Tuple[int, ...], Set[int]] = {}
+                    edges = 0
+                    CAP = 3000
+                    def is_punct_only(span: List[int]) -> bool:
+                        if tokenizer is None:
+                            return False
+                        try:
+                            s = "".join(tokenizer.decode([t]) for t in span)
+                        except Exception:
+                            return False
+                        return not any(ch.isalnum() for ch in s)
+                    for pref in prefixes:
+                        try:
+                            ids = (
+                                tokenizer.encode(pref + text, add_special_tokens=False)
+                                if tokenizer is not None
+                                else None
+                            )
+                        except Exception:
+                            ids = None
+                        if not ids or len(ids) < n:
+                            continue
+                        for i in range(len(ids) - n + 1):
+                            span = ids[i : i + n]
+                            if is_punct_only(span):
+                                continue
+                            key = tuple(int(x) for x in span[:-1])
+                            nxt = int(span[-1])
+                            s = mp.setdefault(key, set())
+                            if nxt not in s:
+                                s.add(nxt)
+                                edges += 1
+                                if edges >= CAP:
+                                    break
+                        if edges >= CAP:
+                            break
+                    if mp:
+                        pair_to_next.append(mp)
+                        built = True
+                except Exception:
+                    built = False
+            if built:
                 max_tokens = cp.get("ban_user_trigram_max_tokens")
                 try:
                     max_tokens = int(max_tokens) if max_tokens is not None else 80

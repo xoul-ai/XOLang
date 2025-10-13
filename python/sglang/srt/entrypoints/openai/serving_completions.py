@@ -176,9 +176,24 @@ class OpenAIServingCompletion(OpenAIServingBase):
             if n < 3:
                 n = 3
             tok = self.tokenizer_manager.tokenizer
-            ids_main: List[int] = tok.encode(text, add_special_tokens=False)
-            ids_pref: List[int] = tok.encode(" " + text, add_special_tokens=False)
-            if (not ids_main or len(ids_main) < n) and (not ids_pref or len(ids_pref) < n):
+            # Leading prefix handling: default prefixes plus optional overrides
+            prefixes = cp.get("ban_user_leading_prefixes")
+            if not isinstance(prefixes, list):
+                prefixes = ["", " ", "\n"]
+            else:
+                # ensure strings only
+                prefixes = [p for p in prefixes if isinstance(p, str)] or ["", " ", "\n"]
+
+            # Collect tokenizations for each prefix
+            tokenizations: List[List[int]] = []
+            for pref in prefixes:
+                try:
+                    ids = tok.encode(pref + text, add_special_tokens=False)
+                    if ids and len(ids) >= n:
+                        tokenizations.append(ids)
+                except Exception:
+                    continue
+            if not tokenizations:
                 return
 
             def is_punct_only(span: List[int]) -> bool:
@@ -192,7 +207,7 @@ class OpenAIServingCompletion(OpenAIServingBase):
             CAP = 3000
             edges = 0
 
-            def add_spans(token_ids: List[int]):
+            def add_spans(token_ids: List[int]) -> bool:
                 nonlocal edges
                 for i in range(len(token_ids) - n + 1):
                     span = token_ids[i : i + n]
@@ -208,11 +223,9 @@ class OpenAIServingCompletion(OpenAIServingBase):
                             return True
                 return False
 
-            if ids_main and len(ids_main) >= n:
-                if add_spans(ids_main):
-                    pass
-            if edges < CAP and ids_pref and len(ids_pref) >= n:
-                add_spans(ids_pref)
+            for ids in tokenizations:
+                if add_spans(ids):
+                    break
             if not pair_to_next:
                 return
             cp = dict(cp)

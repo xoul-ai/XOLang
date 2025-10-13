@@ -470,8 +470,23 @@ class OpenAIServingChat(OpenAIServingBase):
             if n < 3:
                 n = 3
             tok = self.tokenizer_manager.tokenizer
-            ids: List[int] = tok.encode(text, add_special_tokens=False)
-            if not ids or len(ids) < n:
+            # Leading prefixes: defaults + optional overrides
+            prefixes = cp.get("ban_user_leading_prefixes")
+            if not isinstance(prefixes, list):
+                prefixes = ["", " ", "\n"]
+            else:
+                prefixes = [p for p in prefixes if isinstance(p, str)] or ["", " ", "\n"]
+
+            # Tokenize for each prefix
+            tokenizations: List[List[int]] = []
+            for pref in prefixes:
+                try:
+                    ids = tok.encode(pref + text, add_special_tokens=False)
+                    if ids and len(ids) >= n:
+                        tokenizations.append(ids)
+                except Exception:
+                    continue
+            if not tokenizations:
                 return
 
             # Helper: check if all tokens in the n-gram are punctuation-only
@@ -486,18 +501,26 @@ class OpenAIServingChat(OpenAIServingBase):
             pair_to_next: Dict[tuple, set] = {}
             CAP = 3000  # cap number of unique edges
             edges = 0
-            for i in range(len(ids) - n + 1):
-                span = ids[i : i + n]
-                if is_punct_only(span):
-                    continue
-                key = tuple(int(x) for x in span[:-1])
-                nxt = int(span[-1])
-                s = pair_to_next.setdefault(key, set())
-                if nxt not in s:
-                    s.add(nxt)
-                    edges += 1
-                    if edges >= CAP:
-                        break
+
+            def add_spans(token_ids: List[int]) -> bool:
+                nonlocal edges
+                for i in range(len(token_ids) - n + 1):
+                    span = token_ids[i : i + n]
+                    if is_punct_only(span):
+                        continue
+                    key = tuple(int(x) for x in span[:-1])
+                    nxt = int(span[-1])
+                    s = pair_to_next.setdefault(key, set())
+                    if nxt not in s:
+                        s.add(nxt)
+                        edges += 1
+                        if edges >= CAP:
+                            return True
+                return False
+
+            for ids in tokenizations:
+                if add_spans(ids):
+                    break
             if not pair_to_next:
                 return
             # attach mapping; keep other knobs as-is
