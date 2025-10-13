@@ -101,6 +101,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.hard_at_bos: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.bool, device=device
         )
+        self.hard_at_all_starts: torch.Tensor = torch.zeros(
+            (len(reqs),), dtype=torch.bool, device=device
+        )
         self.bias_vals: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.float32, device=device
         )
@@ -121,10 +124,12 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # Defaults
             window = int(cp.get("ban_user_unigram_guard_window", 40) or 40)
             hard_bos = bool(cp.get("ban_user_unigram_hard_at_bos", True))
+            hard_all = bool(cp.get("ban_user_unigram_hard_at_all_starts", False))
             bias = float(cp.get("ban_user_unigram_bias", -0.9) or -0.9)
 
             self.guard_window[i] = window
             self.hard_at_bos[i] = hard_bos
+            self.hard_at_all_starts[i] = hard_all
             self.bias_vals[i] = bias
 
             if not text:
@@ -228,10 +233,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 )
                 self.full_prefixes[i] = prefixes
                 logger.info(
-                    "[UnigramGuard][rid=%s] prepared: window=%d hard_at_bos=%s bias=%.3f watch_first_ids=%d prefixes=%d",
+                    "[UnigramGuard][rid=%s] prepared: window=%d hard_at_bos=%s hard_at_all_starts=%s bias=%.3f watch_first_ids=%d prefixes=%d",
                     getattr(req, "rid", "<unknown>"),
                     int(window),
                     hard_bos,
+                    hard_all,
                     bias,
                     len(first_ids),
                     len(prefixes),
@@ -269,7 +275,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             req = reqs[i]
             is_bos = len(req.output_ids) == 0
-            if not is_bos and not self._is_start_position(req):
+            is_start = True if is_bos else self._is_start_position(req)
+            if not is_start:
                 continue
 
             if is_bos and bool(self.hard_at_bos[i].item()):
@@ -277,6 +284,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 logits[i, first_ids] = -float("inf")
                 logger.info(
                     "[UnigramGuard][rid=%s] HARD BOS applied to %d tokens",
+                    getattr(req, "rid", "<unknown>"),
+                    int(first_ids.numel()),
+                )
+            elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+                # HARD: ban at any detected start (quotes/newline/punctuation)
+                logits[i, first_ids] = -float("inf")
+                logger.info(
+                    "[UnigramGuard][rid=%s] HARD at start applied to %d tokens",
                     getattr(req, "rid", "<unknown>"),
                     int(first_ids.numel()),
                 )
