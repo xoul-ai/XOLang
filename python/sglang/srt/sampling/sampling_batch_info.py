@@ -150,6 +150,7 @@ class SamplingBatchInfo:
                 penaltylib.BatchedMinNewTokensPenalizer,
                 penaltylib.BatchedPresencePenalizer,
                 penaltylib.BatchedDRYPenalizer,
+                penaltylib.BatchedUserTrigramBlockPenalizer,
             },
         )
 

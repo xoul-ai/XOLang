@@ -156,7 +156,61 @@ class OpenAIServingCompletion(OpenAIServingBase):
             for k in ["min_p", "top_k", "repetition_penalty"]:
                 if eb.get(k) is not None:
                     sampling_params[k] = eb[k]
+        # Precompute user n-grams only from provided text (do not infer from prompt)
+        self._inject_user_ngram_block_mapping(sampling_params)
         return sampling_params
+
+    def _inject_user_ngram_block_mapping(self, sampling_params: Dict[str, Any]):
+        try:
+            cp = sampling_params.get("custom_params")
+            if not isinstance(cp, dict):
+                return
+            text = cp.get("ban_user_trigrams_text")
+            if not isinstance(text, str) or not text.strip():
+                return
+            n = cp.get("ban_user_ngram_size", 3)
+            try:
+                n = int(n)
+            except Exception:
+                n = 3
+            if n < 3:
+                n = 3
+            tok = self.tokenizer_manager.tokenizer
+            ids: List[int] = tok.encode(text, add_special_tokens=False)
+            if not ids or len(ids) < n:
+                return
+
+            def is_punct_only(span: List[int]) -> bool:
+                try:
+                    s = "".join(tok.decode([t]) for t in span)
+                except Exception:
+                    return False
+                return not any(ch.isalnum() for ch in s)
+
+            pair_to_next: Dict[tuple, set] = {}
+            CAP = 3000
+            edges = 0
+            for i in range(len(ids) - n + 1):
+                span = ids[i : i + n]
+                if is_punct_only(span):
+                    continue
+                key = tuple(int(x) for x in span[:-1])
+                nxt = int(span[-1])
+                s = pair_to_next.setdefault(key, set())
+                if nxt not in s:
+                    s.add(nxt)
+                    edges += 1
+                    if edges >= CAP:
+                        break
+            if not pair_to_next:
+                return
+            cp = dict(cp)
+            cp["ban_user_pair_to_next_map"] = {k: list(v) for k, v in pair_to_next.items()}
+            cp.setdefault("ban_user_trigram_max_tokens", 80)
+            cp.setdefault("ban_user_ngram_size", n)
+            sampling_params["custom_params"] = cp
+        except Exception:
+            return
 
     async def _handle_streaming_request(
         self,

@@ -124,9 +124,15 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             allowed_lengths.append(allow)
             breakers_ids.append(brk_ids if isinstance(brk_ids, list) else None)
 
-        self.dry_multiplier = torch.tensor(multipliers, dtype=torch.float32, device=device).unsqueeze(1)
-        self.dry_base = torch.tensor(bases, dtype=torch.float32, device=device).unsqueeze(1)
-        self.dry_allowed_length = torch.tensor(allowed_lengths, dtype=torch.int32, device=device).unsqueeze(1)
+        self.dry_multiplier = torch.tensor(
+            multipliers, dtype=torch.float32, device=device
+        ).unsqueeze(1)
+        self.dry_base = torch.tensor(
+            bases, dtype=torch.float32, device=device
+        ).unsqueeze(1)
+        self.dry_allowed_length = torch.tensor(
+            allowed_lengths, dtype=torch.int32, device=device
+        ).unsqueeze(1)
         self.breakers = breakers_ids
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
@@ -191,7 +197,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 continue
 
             # Apply penalty in log-space to all unique candidate tokens
-            pen = mult * (base ** best_k)
+            pen = mult * (base**best_k)
             try:
                 if pen > 0.0:
                     delta = math.log1p(pen)
@@ -209,7 +215,11 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.breakers = [self.breakers[j] for j in keep_indices.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):
-        self.dry_multiplier = torch.cat([self.dry_multiplier, their.dry_multiplier], dim=0)
+        self.dry_multiplier = torch.cat(
+            [self.dry_multiplier, their.dry_multiplier], dim=0
+        )
         self.dry_base = torch.cat([self.dry_base, their.dry_base], dim=0)
-        self.dry_allowed_length = torch.cat([self.dry_allowed_length, their.dry_allowed_length], dim=0)
+        self.dry_allowed_length = torch.cat(
+            [self.dry_allowed_length, their.dry_allowed_length], dim=0
+        )
         self.breakers.extend(their.breakers)
