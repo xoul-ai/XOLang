@@ -173,12 +173,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
+            end_punct = [",", ".", "?", "!", ":", ";"]
             for w in words_with_variants:
                 # Try common surfaces for sentence starts and quotes
-                # - bare word
-                # - leading space (start after punctuation/newline)
-                # - leading opening quote merged with the word
-                surfaces = (
+                # Base leading variants
+                base_surfaces = [
                     w,
                     f" {w}",
                     f'"{w}',
@@ -188,7 +187,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     f" '{w}",
                     f"*{w}",
                     f" *{w}",
-                )
+                ]
+                # Include punctuation-suffixed variants (to match BPE-fused tokens like 'Lawyers?')
+                surfaces = []
+                for s in base_surfaces:
+                    surfaces.append(s)
+                    for p in end_punct:
+                        surfaces.append(s + p)
                 for surface in surfaces:
                     try:
                         ids = tokenizer.encode(surface, add_special_tokens=False)
