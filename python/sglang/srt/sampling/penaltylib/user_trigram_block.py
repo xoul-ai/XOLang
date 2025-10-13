@@ -53,6 +53,7 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
 
         for req in self.orchestrator.reqs():
             cp = getattr(req.sampling_params, "custom_params", None) or {}
+            debug = bool(cp.get("ban_user_trigrams_debug", False))
 
             # Allow overriding the active length window; default 80
             limit = cp.get("ban_user_trigrams_max_tokens")
@@ -89,6 +90,16 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                         else:
                             pair2next[p].append(nxt)
                 add_trigrams(ids)
+                if debug:
+                    try:
+                        tok = getattr(req, "tokenizer", None)
+                        toks = [tok.decode([t]) if tok is not None else str(t) for t in ids]
+                        self._logger.info(
+                            "[UTB] rid=%s base_text_ids=%s base_text_tokens=%s",
+                            getattr(req, "rid", ""), ids, toks
+                        )
+                    except Exception:
+                        pass
                 # Also consider a leading-space variant to match common generation prefixes
                 try:
                     tokenizer = getattr(req, "tokenizer", None)
@@ -96,6 +107,15 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                         ids2 = tokenizer.encode(" " + text, add_special_tokens=False)
                         if isinstance(ids2, list) and len(ids2) >= 3:
                             add_trigrams(ids2)
+                            if debug:
+                                try:
+                                    toks2 = [tokenizer.decode([t]) for t in ids2]
+                                    self._logger.info(
+                                        "[UTB] rid=%s space_text_ids=%s space_text_tokens=%s",
+                                        getattr(req, "rid", ""), ids2, toks2
+                                    )
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
 
@@ -136,12 +156,34 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
 
             # Need at least two generated tokens to match a trigram prefix
             if len(req.output_ids) < 2:
+                try:
+                    cp = getattr(req.sampling_params, "custom_params", None) or {}
+                    if cp.get("ban_user_trigrams_debug", False):
+                        self._logger.debug(
+                            "[UTB] step=%d rid=%s not enough history (need >=2)",
+                            len(req.output_ids), getattr(req, "rid", "")
+                        )
+                except Exception:
+                    pass
                 continue
 
             t1 = int(req.output_ids[-2])
             t2 = int(req.output_ids[-1])
             next_list = mapping.get((t1, t2))
             if not next_list:
+                # Optional step-level debug
+                try:
+                    cp = getattr(req.sampling_params, "custom_params", None) or {}
+                    if cp.get("ban_user_trigrams_debug", False):
+                        tok = getattr(req, "tokenizer", None)
+                        s1 = tok.decode([t1]) if tok is not None else str(t1)
+                        s2 = tok.decode([t2]) if tok is not None else str(t2)
+                        self._logger.debug(
+                            "[UTB] step=%d rid=%s last2=(%d,%d) last2_str=(%s|%s) -> no match",
+                            len(req.output_ids), getattr(req, "rid", ""), t1, t2, s1, s2
+                        )
+                except Exception:
+                    pass
                 continue
 
             # Block all candidate next ids that would complete a matching trigram
@@ -150,15 +192,15 @@ class BatchedUserTrigramBlocker(_BatchedPenalizer):
                     logits[i, t3] = -float("inf")
             # Optional debug: show first block action for a req
             try:
-                if hasattr(req, "_utb_logged") is False or getattr(req, "_utb_logged", False) is False:
-                    setattr(req, "_utb_logged", True)
-                    self._logger.debug(
-                        "Blocked user trigram at step=%d for rid=%s, last2=(%d,%d), blocked_next=%s",
-                        len(req.output_ids),
-                        getattr(req, "rid", ""),
-                        t1,
-                        t2,
-                        next_list,
+                cp = getattr(req.sampling_params, "custom_params", None) or {}
+                if cp.get("ban_user_trigrams_debug", False):
+                    tok = getattr(req, "tokenizer", None)
+                    blocked_str = [tok.decode([t]) if tok is not None else str(t) for t in next_list]
+                    s1 = tok.decode([t1]) if tok is not None else str(t1)
+                    s2 = tok.decode([t2]) if tok is not None else str(t2)
+                    self._logger.info(
+                        "[UTB] step=%d rid=%s last2=(%d,%d) last2_str=(%s|%s) blocked_next_ids=%s blocked_next_tokens=%s",
+                        len(req.output_ids), getattr(req, "rid", ""), t1, t2, s1, s2, next_list, blocked_str
                     )
             except Exception:
                 pass
