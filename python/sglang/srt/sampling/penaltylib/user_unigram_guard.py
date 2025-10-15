@@ -274,7 +274,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             req = reqs[i]
-            is_bos = len(req.output_ids) == 0
+            # Be robust if output_ids is None
+            _out_ids = getattr(req, "output_ids", None) or []
+            is_bos = len(_out_ids) == 0
             is_start = True if is_bos else self._is_start_position(req)
             if not is_start:
                 continue
@@ -311,6 +313,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         keep = keep_indices
         self.guard_window = self.guard_window[keep]
         self.hard_at_bos = self.hard_at_bos[keep]
+        self.hard_at_all_starts = self.hard_at_all_starts[keep]
         self.bias_vals = self.bias_vals[keep]
         self.generated_counts = self.generated_counts[keep]
         self.first_token_ids = [self.first_token_ids[j] for j in keep.tolist()]
@@ -319,6 +322,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
         self.hard_at_bos = torch.cat([self.hard_at_bos, their.hard_at_bos], dim=0)
+        self.hard_at_all_starts = torch.cat(
+            [self.hard_at_all_starts, their.hard_at_all_starts], dim=0
+        )
         self.bias_vals = torch.cat([self.bias_vals, their.bias_vals], dim=0)
         self.generated_counts = torch.cat(
             [self.generated_counts, their.generated_counts], dim=0
@@ -328,16 +334,17 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     def _is_start_position(self, req) -> bool:
         # True if BOS or last non-space char is an opening quote or sentence-ending punctuation
-        if len(req.output_ids) == 0:
+        _out_ids = getattr(req, "output_ids", None) or []
+        if len(_out_ids) == 0:
             return True
         tokenizer = getattr(req, "tokenizer", None)
         if tokenizer is None:
             return False
 
         # Decode up to the last 12 tokens to capture punctuation even if split/merged
-        n = min(12, len(req.output_ids))
+        n = min(12, len(_out_ids))
         try:
-            tail = tokenizer.decode(req.output_ids[-n:])
+            tail = tokenizer.decode(_out_ids[-n:])
         except Exception:
             logger.exception(
                 "[UnigramGuard][rid=%s] tail decode failed",
