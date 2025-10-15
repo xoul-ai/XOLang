@@ -204,6 +204,7 @@ class CompletionRequest(BaseModel):
     top_p: float = 1.0
     user: Optional[str] = None
     return_hidden_states: bool = False
+    extra_body: Optional[Dict[str, Any]] = None
 
     # Extra parameters for SRT backend only and will be ignored by OpenAI models.
     top_k: int = -1
@@ -217,6 +218,7 @@ class CompletionRequest(BaseModel):
     no_stop_trim: bool = False
     ignore_eos: bool = False
     skip_special_tokens: bool = True
+    custom_params: Optional[Dict[str, Any]] = None
     lora_path: Optional[Union[List[Optional[str]], Optional[str]]] = None
     session_params: Optional[Dict] = None
     response_format: Optional[Union[ResponseFormat, StructuralTagResponseFormat]] = None
@@ -442,6 +444,7 @@ class ChatCompletionRequest(BaseModel):
         default="auto", examples=["none"]
     )  # noqa
     return_hidden_states: bool = False
+    extra_body: Optional[Dict[str, Any]] = None
     reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
         default="medium",
         description="Constrains effort on reasoning for reasoning models. "

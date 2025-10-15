@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import logging
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -13,9 +12,6 @@ from sglang.srt.sampling.sampling_params import TOP_K_ALL
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import ScheduleBatch
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -149,8 +145,11 @@ class SamplingBatchInfo:
                 penaltylib.BatchedFrequencyPenalizer,
                 penaltylib.BatchedMinNewTokensPenalizer,
                 penaltylib.BatchedPresencePenalizer,
+                penaltylib.BatchedDRYPenalizer,
+                penaltylib.BatchedUserUnigramStartGuardPenalizer,
             },
         )
+
 
         ret = cls(
             temperatures=temperatures,

@@ -431,6 +431,15 @@ class OpenAIServingChat(OpenAIServingBase):
                 )
             else:
                 sampling_params[constraint_type] = constraint_value
+        if getattr(request, "custom_params", None) is not None:
+            sampling_params["custom_params"] = request.custom_params
+        eb = getattr(request, "extra_body", None)
+        if isinstance(eb, dict):
+            if eb.get("custom_params") is not None:
+                sampling_params["custom_params"] = eb["custom_params"]
+            for k in ["min_p", "top_k", "repetition_penalty"]:
+                if eb.get(k) is not None:
+                    sampling_params[k] = eb[k]
         return sampling_params
 
     async def _handle_streaming_request(
