@@ -143,7 +143,6 @@ _STOPWORDS: Set[str] = {
     "yours",
     "yourself",
     "yourselves",
-
     # Adverbs/quantifiers commonly function-word-ish
     "also",
     "already",
@@ -188,7 +187,6 @@ _STOPWORDS: Set[str] = {
     "towards",
     "well",
     "yet",
-
     # Contraction fragments commonly split by regex
     "re",
     "ve",
@@ -198,7 +196,6 @@ _STOPWORDS: Set[str] = {
     "m",
     "t",
     "nt",
-
     # Negation/auxiliary stems that appear without apostrophes
     "aren",
     "couldn",
@@ -322,6 +319,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     f" '{w}",
                     f"*{w}",
                     f" *{w}",
+                    f"*'{w}",
+                    f" *'{w}",
                 ]
                 surfaces = []
                 for s in base_surfaces:
