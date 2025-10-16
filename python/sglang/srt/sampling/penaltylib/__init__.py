@@ -14,6 +14,9 @@ from sglang.srt.sampling.penaltylib.dry import BatchedDRYPenalizer
 from sglang.srt.sampling.penaltylib.user_unigram_guard import (
     BatchedUserUnigramStartGuardPenalizer,
 )
+from sglang.srt.sampling.penaltylib.bigram_start_guard import (
+    BatchedFixedBigramStartGuardPenalizer,
+)
 
 __all__ = [
     "BatchedFrequencyPenalizer",
@@ -22,4 +25,5 @@ __all__ = [
     "BatchedPenalizerOrchestrator",
     "BatchedDRYPenalizer",
     "BatchedUserUnigramStartGuardPenalizer",
+    "BatchedFixedBigramStartGuardPenalizer",
 ]

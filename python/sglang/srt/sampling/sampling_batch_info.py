@@ -147,7 +147,11 @@ class SamplingBatchInfo:
                 penaltylib.BatchedPresencePenalizer,
                 penaltylib.BatchedDRYPenalizer,
                 penaltylib.BatchedUserUnigramStartGuardPenalizer,
-            },
+            }
+            |
+            ({penaltylib.BatchedFixedBigramStartGuardPenalizer}
+             if cls._get_global_server_args_dict().get("enable_bigram_start_guard_the_word", True)
+             else set()),
         )
 
 

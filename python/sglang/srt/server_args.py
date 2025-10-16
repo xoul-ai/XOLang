@@ -359,6 +359,8 @@ class ServerArgs:
     enable_memory_saver: bool = False
     allow_auto_truncate: bool = False
     enable_custom_logit_processor: bool = False
+    # Enable guard that prevents starting a sentence/reply with the phrase "The word"
+    enable_bigram_start_guard_the_word: bool = True
     flashinfer_mla_disable_ragged: bool = False
     disable_shared_experts_fusion: bool = False
     disable_chunked_prefix_cache: bool = False
@@ -2042,6 +2044,20 @@ class ServerArgs:
             "--enable-custom-logit-processor",
             action="store_true",
             help="Enable users to pass custom logit processors to the server (disabled by default for security)",
+        )
+        # Bigram guard for "The word" at start of sentence/reply
+        parser.add_argument(
+            "--enable-bigram-start-guard-the-word",
+            dest="enable_bigram_start_guard_the_word",
+            action="store_true",
+            default=ServerArgs.enable_bigram_start_guard_the_word,
+            help="Enable guard that prevents starting a sentence/reply with the phrase 'The word' (default: enabled).",
+        )
+        parser.add_argument(
+            "--disable-bigram-start-guard-the-word",
+            dest="enable_bigram_start_guard_the_word",
+            action="store_false",
+            help="Disable guard that prevents starting a sentence/reply with the phrase 'The word'.",
         )
         parser.add_argument(
             "--flashinfer-mla-disable-ragged",
