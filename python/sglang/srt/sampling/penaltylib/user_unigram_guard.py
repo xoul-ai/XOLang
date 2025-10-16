@@ -266,8 +266,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             return False
         for req in reqs:
             cp = getattr(req.sampling_params, "custom_params", None)
-            if isinstance(cp, dict) and cp.get("unigrams_text"):
-                return True
+            if isinstance(cp, dict):
+                if cp.get("unigrams_text"):
+                    return True
+                # Also enable if start-bigram guard is explicitly configured
+                if cp.get("ban_start_bigram_the_word_hard") or float(
+                    cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0
+                ) != 0.0:
+                    return True
         return False
 
     def _prepare(self):
@@ -406,12 +412,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 self.full_prefixes[i] = None
 
             # Precompute second-word first token IDs for the bigram "The word"
-            # We handle contexts like: "The word", "The \"word", "The *word", etc.
+            # Only handle raw phrase with a single space: "The word" / "the word".
             if bigram_bias != 0.0 or bigram_hard:
                 second_ids: Set[int] = set()
+                # Only the space-prefixed surface to capture typical tokenizers (e.g., BPE)
                 second_surfaces = [" word"]
-                for q in self._OPENING_QUOTES:
-                    second_surfaces.append(f" {q}word")
                 for s in second_surfaces:
                     try:
                         ids = tokenizer.encode(s, add_special_tokens=False)
@@ -552,9 +557,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         return is_start
 
     def _starts_with_word(self, req, target: str) -> bool:
-        """True if generated output begins with optional quotes/asterisks, then the
-        target word (case-insensitive), and has no additional non-space characters
-        after that word (i.e., immediately after first word)."""
+        """True if generated output begins with the target word (case-insensitive),
+        with no preceding quotes/asterisks; allows leading spaces only; and there
+        are no additional non-space characters after that first word."""
         _out_ids = getattr(req, "output_ids", None) or []
         if len(_out_ids) == 0:
             return False
@@ -572,11 +577,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Skip leading spaces
         while i < n and text[i].isspace():
             i += 1
-        # Skip any leading quotes/asterisks and spaces following them
-        while i < n and text[i] in self._OPENING_QUOTES:
-            i += 1
-            while i < n and text[i].isspace():
-                i += 1
+        # Do NOT skip quotes/asterisks; we only want the raw phrase case.
         m = re.match(r"([A-Za-z]+)\b", text[i:])
         if not m or m.group(1).lower() != target.lower():
             return False
