@@ -573,6 +573,29 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     bb = float(self.bigram_bias_vals[i].item())
                     if bb != 0.0:
                         logits[i, second_ids] += bb
+                # Additionally, enforce via sampling_info.logit_bias to survive
+                # overlap scheduling paths where linear_penalty may not be applied in time.
+                try:
+                    sampling_info = self.orchestrator.batch.sampling_info
+                    if sampling_info is not None:
+                        if sampling_info.logit_bias is None:
+                            sampling_info.logit_bias = torch.zeros(
+                                (len(self.orchestrator.reqs()), self.orchestrator.vocab_size),
+                                device=logits.device,
+                                dtype=logits.dtype,
+                            )
+                        sampling_info.logit_bias[i, second_ids] = -float("inf")
+                        logger.info(
+                            "[unigram_guard][apply][%d] enforced logit_bias -inf for ids(sample)=%s",
+                            i,
+                            second_ids[:10].tolist(),
+                        )
+                except Exception as e:
+                    logger.info(
+                        "[unigram_guard][apply][%d] failed to set logit_bias: %s",
+                        i,
+                        str(e),
+                    )
                 try:
                     sample_vals_after = (
                         logits[i, second_ids[:10]].detach().cpu().tolist()
