@@ -429,6 +429,68 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         first_ids.add(int(ids[0]))
                         prefixes.append(ids)
 
+            # Augment watchlist by scanning vocab for single-piece tokens that
+            # start with any banned word after stripping spaces/quotes.
+            try:
+                vocab_size = getattr(self.orchestrator, "vocab_size", None) or 0
+                banned_words: Set[str] = set()
+                for orig in matches:
+                    low = orig.lower()
+                    if low and (low not in _STOPWORDS):
+                        banned_words.add(low)
+                if banned_words and 0 < vocab_size <= 200000:
+                    # Build set of leading chars to ignore
+                    ignore_leading = (
+                        "\u0020\n\t\r\f\v\u00A0\u2009\u202F\u3000\u1680"
+                        "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u205F\u00AD\u180E"
+                    )
+                    for q in self._OPENING_QUOTES:
+                        ignore_leading += q
+                    added = 0
+                    add_cap = 4096
+                    for tok_id in range(vocab_size):
+                        if tok_id in first_ids:
+                            continue
+                        try:
+                            s = tokenizer.decode([tok_id])
+                        except Exception:
+                            continue
+                        if not s:
+                            continue
+                        k = 0
+                        L = len(s)
+                        while k < L and (s[k] in ignore_leading):
+                            k += 1
+                        if k >= L:
+                            continue
+                        ch0 = s[k]
+                        if not ("A" <= ch0 <= "Z" or "a" <= ch0 <= "z"):
+                            continue
+                        rem = s[k:].lower()
+                        for wlow in banned_words:
+                            if rem.startswith(wlow):
+                                end = len(wlow)
+                                # Word boundary check: next char (if any) is not alpha
+                                if end < len(rem) and rem[end : end + 1].isalpha():
+                                    continue
+                                first_ids.add(int(tok_id))
+                                added += 1
+                                break
+                        if added >= add_cap:
+                            break
+                    if added:
+                        logger.info(
+                            "[unigram_guard][prep][%d] augmented first_token_ids +%d (total=%d)",
+                            i,
+                            added,
+                            len(first_ids),
+                        )
+            except Exception:
+                logger.exception(
+                    "[unigram_guard][prep][%d] vocab-scan augmentation failed",
+                    i,
+                )
+
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
                     sorted(first_ids), dtype=torch.int64, device=device
