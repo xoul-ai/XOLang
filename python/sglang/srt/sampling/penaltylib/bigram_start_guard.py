@@ -427,8 +427,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         int(self.word_no_space_ids.numel()),
                         self.word_no_space_ids.tolist(),
                     )
-                # Reset flag after applying for this step
-                self.pending_after_the_at_start[i] = False
+                # Do not reset pending flag here; allow sampler compute-now to observe it reliably
 
             # Multi-step guard: if we're in active suffix matching state and are at the point
             # where emitting the next token would complete the suffix (canonical encoding),
@@ -474,15 +473,43 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 out[i] = self.single_token_blacklist
                 continue
             # Two-step guard: use cumulated state to decide immediately-after-THE-at-start
+            decided = False
+            # Path A: use cumulated state if available
             try:
                 if bool(self.pending_after_the_at_start[i].item()):
                     need_space_variant = bool(self.suffix_variant_space[i].item())
                     if need_space_variant and self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
                         out[i] = self.word_with_space_ids
+                        decided = True
                     elif (not need_space_variant) and self.word_no_space_ids is not None and self.word_no_space_ids.numel() > 0:
                         out[i] = self.word_no_space_ids
+                        decided = True
             except Exception:
                 pass
+            if decided:
+                logger.info(
+                    f"BigramGuard COMPUTE_NOW: rid={getattr(req,'rid',None)} idx={i} path=A pending_after_the={bool(self.pending_after_the_at_start[i].item())} variant_space={bool(self.suffix_variant_space[i].item())} ids={(out[i][:min(8,out[i].numel())].tolist() if out[i] is not None else [])}"
+                )
+                continue
+            # Path B: infer from request state if cumulated state not set yet on this rank
+            first_ids_set2 = self.first_token_ids_set_per_req[i]
+            if first_ids_set2 and out_ids_list:
+                is_start_here = len(out_ids_list) == 1 or self._is_start_position(req)
+                if is_start_here:
+                    last_id2 = int(out_ids_list[-1])
+                    if last_id2 in first_ids_set2:
+                        req_map2 = self.first_token_requires_space_per_req[i] or {}
+                        need_space_variant2 = bool(req_map2.get(last_id2, True))
+                        if need_space_variant2 and self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
+                            out[i] = self.word_with_space_ids
+                            logger.info(
+                                f"BigramGuard COMPUTE_NOW: rid={getattr(req,'rid',None)} idx={i} path=B variant=space ids={self.word_with_space_ids[:min(8,self.word_with_space_ids.numel())].tolist()}"
+                            )
+                        elif (not need_space_variant2) and self.word_no_space_ids is not None and self.word_no_space_ids.numel() > 0:
+                            out[i] = self.word_no_space_ids
+                            logger.info(
+                                f"BigramGuard COMPUTE_NOW: rid={getattr(req,'rid',None)} idx={i} path=B variant=no_space ids={self.word_no_space_ids[:min(8,self.word_no_space_ids.numel())].tolist()}"
+                            )
         return out
 
     def _filter(self, keep_indices: torch.Tensor):

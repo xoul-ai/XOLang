@@ -90,6 +90,9 @@ class Sampler(nn.Module):
 
         # Optionally synchronize blocked ids across TP to avoid rank divergence
         try:
+            logger.info(
+                f"SAMPLER_ENV: SYNC_BLOCKED_IDS_ACROSS_TP={int(SYNC_BLOCKED_IDS_ACROSS_TP)} dist_init={dist.is_initialized() if hasattr(dist,'is_initialized') else 'NA'}"
+            )
             if SYNC_BLOCKED_IDS_ACROSS_TP and dist.is_initialized() and self.tp_sync_group is not None:
                 hard = (
                     sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
@@ -129,24 +132,28 @@ class Sampler(nn.Module):
                             if union:
                                 merged = torch.unique(torch.cat(union))
                                 hard[i] = merged
-                        if logger.isEnabledFor(logging.INFO):
-                            # Log a small summary
-                            for bi in range(min(B, 2)):
-                                ids = hard[bi]
-                                if ids is not None and ids.numel() > 0:
-                                    logger.info(
-                                        f"SAMPLER_SYNC_BLOCKS: batch_idx={bi} union_blocked_count={int(ids.numel())} sample_ids={ids[:min(8, ids.numel())].tolist()}"
-                                    )
+                        # Log a small summary regardless, to see empties
+                        for bi in range(min(B, 2)):
+                            ids = hard[bi]
+                            count = int(ids.numel()) if (ids is not None and hasattr(ids, 'numel')) else 0
+                            sample = ids[: min(8, ids.numel())].tolist() if count > 0 else []
+                            logger.info(
+                                f"SAMPLER_SYNC_BLOCKS: batch_idx={bi} union_blocked_count={count} sample_ids={sample}"
+                            )
+                else:
+                    logger.info("SAMPLER_SYNC_BLOCKS: no hard ids to union (all empty)")
         except Exception:
             pass
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
         try:
+            logger.info("ENFORCE_BLOCK_ENTRY: About to call enforce_hard_blocks")
             before = None
             if logger.isEnabledFor(logging.INFO):
                 # count how many rows have any hard-blocks
                 pass
             sampling_info.enforce_hard_blocks(logits)
+            logger.info("ENFORCE_BLOCK_DONE: enforce_hard_blocks completed successfully")
             if logger.isEnabledFor(logging.INFO):
                 # Log a brief summary of blocked ids (first 2 rows)
                 hard = (
