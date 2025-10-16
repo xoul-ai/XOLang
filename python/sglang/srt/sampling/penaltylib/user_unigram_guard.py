@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional, Set
 
@@ -9,6 +10,8 @@ from sglang.srt.sampling.penaltylib.orchestrator import (
     BatchedPenalizerOrchestrator,
     _BatchedPenalizer,
 )
+
+logger = logging.getLogger(__name__)
 
 # Expanded English stopword list to avoid biasing common words.
 # Notes:
@@ -267,14 +270,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         for req in reqs:
             cp = getattr(req.sampling_params, "custom_params", None)
             if isinstance(cp, dict):
-                if cp.get("unigrams_text"):
-                    return True
-                # Also enable if start-bigram guard is explicitly configured
-                if (
-                    cp.get("ban_start_bigram_the_word_hard")
-                    or float(cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0)
-                    != 0.0
-                ):
+                ut = bool(cp.get("unigrams_text"))
+                bb_hard = bool(cp.get("ban_start_bigram_the_word_hard", False))
+                bb_bias = float(cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0)
+                logger.info(
+                    "[unigram_guard] _is_required: unigrams_text=%s bigram_hard=%s bigram_bias=%.3f",
+                    ut,
+                    bb_hard,
+                    bb_bias,
+                )
+                if ut or bb_hard or bb_bias != 0.0:
                     return True
         return False
 
@@ -327,6 +332,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             self.bias_vals[i] = bias
             self.bigram_bias_vals[i] = bigram_bias
             self.bigram_hard[i] = bigram_hard
+            logger.info(
+                "[unigram_guard][prep][%d] window=%d hard_bos=%s hard_all=%s bias=%.3f bigram_hard=%s bigram_bias=%.3f",
+                i,
+                window,
+                hard_bos,
+                hard_all,
+                bias,
+                bigram_hard,
+                bigram_bias,
+            )
 
             # Continue to compute bigram surfaces even if `text` is empty
 
@@ -336,6 +351,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             matches = re.findall(r"[A-Za-z]+", text) if text else []
+            # Log match count even if zero; bigram may still be active
+            try:
+                logger.info(
+                    "[unigram_guard][prep][%d] extracted_matches=%d text_len=%d",
+                    i,
+                    len(matches),
+                    len(text),
+                )
+            except Exception:
+                pass
 
             cap = 1500
             seen: Set[str] = set()
@@ -356,6 +381,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
+            logger.info(
+                "[unigram_guard][prep][%d] words_with_variants=%d",
+                i,
+                len(words_with_variants),
+            )
             # Include common trailing punctuation and quote-like enders. This helps
             # harvest first-token IDs in tokenizers that fuse trailing chars.
             end_punct = [
@@ -404,9 +434,15 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     sorted(first_ids), dtype=torch.int64, device=device
                 )
                 self.full_prefixes[i] = prefixes
+                logger.info(
+                    "[unigram_guard][prep][%d] first_token_ids_count=%d",
+                    i,
+                    len(first_ids),
+                )
             else:
                 self.first_token_ids[i] = None
                 self.full_prefixes[i] = None
+                logger.info("[unigram_guard][prep][%d] no first_token_ids", i)
 
             # Precompute second-word first token IDs for the bigram "The word"
             # Only handle raw phrase with a single space: "The word" / "the word".
@@ -437,8 +473,19 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     self.bigram_second_token_ids[i] = torch.tensor(
                         sorted(second_ids), dtype=torch.int64, device=device
                     )
+                    try:
+                        logger.info(
+                            "[unigram_guard][prep][%d] bigram_second_ids(sample)=%s",
+                            i,
+                            list(sorted(second_ids))[:10],
+                        )
+                    except Exception:
+                        pass
                 else:
                     self.bigram_second_token_ids[i] = None
+                    logger.info(
+                        "[unigram_guard][prep][%d] no bigram_second_token_ids", i
+                    )
             else:
                 self.bigram_second_token_ids[i] = None
 
@@ -446,6 +493,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if output_ids is None or output_ids.numel() == 0:
             return
         self.generated_counts.add_(torch.ones_like(self.generated_counts))
+        try:
+            logger.info(
+                "[unigram_guard][step] output_ids=%s counts=%s",
+                output_ids.tolist(),
+                self.generated_counts.tolist(),
+            )
+        except Exception:
+            pass
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -468,6 +523,12 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 < int(self.guard_window[i].item())
                 and self._starts_with_word(req, target="the")
             ):
+                logger.info(
+                    "[unigram_guard][apply][%d] bigram_trigger hard=%s ids(sample)=%s",
+                    i,
+                    bool(self.bigram_hard[i].item()),
+                    second_ids[:10].tolist(),
+                )
                 if bool(self.bigram_hard[i].item()):
                     logits[i, second_ids] = -float("inf")
                 else:
@@ -477,8 +538,15 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             first_ids = self.first_token_ids[i]
             if first_ids is None or first_ids.numel() == 0:
+                logger.info("[unigram_guard][apply][%d] no first_ids; skip", i)
                 continue
             if int(self.generated_counts[i].item()) >= int(self.guard_window[i].item()):
+                logger.info(
+                    "[unigram_guard][apply][%d] past_guard_window %d>=%d; skip",
+                    i,
+                    int(self.generated_counts[i].item()),
+                    int(self.guard_window[i].item()),
+                )
                 continue
 
             # 2) Determine whether we are at a start position (BOS or after quotes/punctuation)
@@ -486,16 +554,37 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             is_bos = len(_out_ids) == 0
             is_start = True if is_bos else self._is_start_position(req)
             if not is_start:
+                logger.info(
+                    "[unigram_guard][apply][%d] not at start (is_bos=%s); skip",
+                    i,
+                    is_bos,
+                )
                 continue
 
             # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
             if is_bos and bool(self.hard_at_bos[i].item()):
+                logger.info(
+                    "[unigram_guard][apply][%d] BOS hard block on %d ids",
+                    i,
+                    int(first_ids.numel()),
+                )
                 logits[i, first_ids] = -float("inf")
             elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+                logger.info(
+                    "[unigram_guard][apply][%d] start hard block on %d ids",
+                    i,
+                    int(first_ids.numel()),
+                )
                 logits[i, first_ids] = -float("inf")
             else:
                 bias = float(self.bias_vals[i].item())
                 if bias != 0.0:
+                    logger.info(
+                        "[unigram_guard][apply][%d] soft bias %.3f to %d ids",
+                        i,
+                        bias,
+                        int(first_ids.numel()),
+                    )
                     logits[i, first_ids] += bias
 
     def _filter(self, keep_indices: torch.Tensor):
@@ -512,6 +601,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.bigram_second_token_ids = [
             self.bigram_second_token_ids[j] for j in keep.tolist()
         ]
+        logger.info(
+            "[unigram_guard][filter] keep=%s new_size=%d",
+            keep.tolist(),
+            len(self.first_token_ids),
+        )
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
@@ -553,6 +647,12 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             return False
         ch = tail[i]
         is_start = ch in self._OPENING_QUOTES or ch in self._SENTENCE_END_CHARS
+        logger.info(
+            "[unigram_guard][_is_start_position] tail=%r last_char=%r is_start=%s",
+            tail,
+            ch,
+            is_start,
+        )
         return is_start
 
     def _starts_with_word(self, req, target: str) -> bool:
@@ -579,8 +679,20 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Do NOT skip quotes/asterisks; we only want the raw phrase case.
         m = re.match(r"([A-Za-z]+)\b", text[i:])
         if not m or m.group(1).lower() != target.lower():
+            logger.info(
+                "[unigram_guard][_starts_with_word] mismatch text_prefix=%r target=%s",
+                text[:50],
+                target,
+            )
             return False
         # Ensure we're immediately after the first word (ignore trailing spaces)
         j = i + len(m.group(0))
         remainder = text[j:]
-        return remainder.strip() == ""
+        ok = remainder.strip() == ""
+        logger.info(
+            "[unigram_guard][_starts_with_word] matched first=%s ok=%s prefix=%r",
+            m.group(1),
+            ok,
+            text[: max(60, j + 2)],
+        )
+        return ok
