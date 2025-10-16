@@ -116,12 +116,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         pass
                     else:
                         w_space_ids.add(int(tid))
+                        logger.info(f"BigramGuard VOCAB: FOUND w_space tid={tid} raw={repr(s)} norm={repr(s_norm)} lower={repr(sl)}")
                 if sl.startswith("word"):
                     pos = len("word")
                     if pos < len(sl) and sl[pos : pos + 1].isalpha():
                         pass
                     else:
                         no_space_ids.add(int(tid))
+                        logger.info(f"BigramGuard VOCAB: FOUND no_space tid={tid} raw={repr(s)} norm={repr(s_norm)} lower={repr(sl)}")
             if w_space_ids:
                 self.word_with_space_ids = torch.tensor(
                     sorted(w_space_ids), dtype=torch.int64, device=device
@@ -303,15 +305,6 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             else:
                                 # diverged; deactivate
                                 self.active_after_the[i] = False
-                        logger.info(
-                            "BigramGuard: advance FSM rid=%s idx=%d last_id=%d prog=%d/%d variant_space=%s",
-                            str(getattr(req, "rid", None)),
-                            i,
-                            last_id,
-                            int(self.suffix_progress[i].item()),
-                            len(seq),
-                            str(bool(self.suffix_variant_space[i].item())),
-                        )
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
@@ -328,39 +321,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     i,
                     int(self.single_token_blacklist.numel()),
                 )
-            # Verbose diagnostics: decode tail and top-10 tokens pre-mask
-            try:
-                tok = getattr(req, "tokenizer", None)
-                if tok is not None:
-                    tail_decode = tok.decode(out_ids_list[-12:]) if out_ids_list else ""
-                else:
-                    tail_decode = ""
-            except Exception:
-                tail_decode = "<decode_error>"
-            # snapshot top-10 before applying multi-step mask
-            try:
-                vals, idxs = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                top_ids = idxs.tolist()
-                top_vals = vals.tolist()
-            except Exception:
-                top_ids, top_vals = [], []
-            decoded_tops = []
             tok = getattr(req, "tokenizer", None)
-            if tok is not None:
-                for tid in top_ids:
-                    try:
-                        decoded_tops.append(tok.decode([tid]))
-                    except Exception:
-                        decoded_tops.append("")
-            logger.info(
-                "BigramGuard: pre-mask diag rid=%s idx=%d out_len=%d tail=['%s'] top10_ids=%s top10_decodes=%s",
-                str(rid),
-                i,
-                len(out_ids_list),
-                tail_decode.replace("\n", "\\n"),
-                top_ids,
-                decoded_tops,
-            )
 
             # Two-step guard: proactively detect if we are immediately after a THE token at a start,
             # even if cumulate missed due to overlap scheduling. If so, set variant and apply masks.
@@ -399,18 +360,20 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 if need_space_variant and self.word_with_space_ids is not None:
                     logits[i, self.word_with_space_ids] = -float("inf")
                     logger.info(
-                        "BigramGuard: blocked second token set variant=space rid=%s idx=%d size=%d",
+                        "BigramGuard: blocked second token set variant=space rid=%s idx=%d size=%d blocked_tids=%s",
                         str(rid),
                         i,
                         int(self.word_with_space_ids.numel()),
+                        self.word_with_space_ids.tolist(),
                     )
                 elif (not need_space_variant) and self.word_no_space_ids is not None:
                     logits[i, self.word_no_space_ids] = -float("inf")
                     logger.info(
-                        "BigramGuard: blocked second token set variant=no_space rid=%s idx=%d size=%d",
+                        "BigramGuard: blocked second token set variant=no_space rid=%s idx=%d size=%d blocked_tids=%s",
                         str(rid),
                         i,
                         int(self.word_no_space_ids.numel()),
+                        self.word_no_space_ids.tolist(),
                     )
                 # Reset flag after applying for this step
                 self.pending_after_the_at_start[i] = False
@@ -437,30 +400,6 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             next_tid,
                             str(bool(self.suffix_variant_space[i].item())),
                         )
-            # snapshot top-10 after masking for visibility
-            try:
-                vals2, idxs2 = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                top_ids2 = idxs2.tolist()
-                decoded_tops2 = []
-                tok2 = getattr(req, "tokenizer", None)
-                if tok2 is not None:
-                    for tid in top_ids2:
-                        try:
-                            decoded_tops2.append(tok2.decode([tid]))
-                        except Exception:
-                            decoded_tops2.append("")
-            except Exception:
-                top_ids2, decoded_tops2 = [], []
-            logger.info(
-                "BigramGuard: post-mask diag rid=%s idx=%d top10_ids=%s top10_decodes=%s active_after_the=%s prog=%s/%s",
-                str(rid),
-                i,
-                top_ids2,
-                decoded_tops2,
-                str(bool(self.active_after_the[i].item())),
-                str(int(self.suffix_progress[i].item())),
-                str(len(self.suffix_seq_space or self.suffix_seq_nospace or [])),
-            )
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
@@ -509,12 +448,4 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             return False
         ch = tail[i]
         is_start = ch in QUOTE_CHARS or ch in SENTENCE_END_CHARS
-        logger.info(
-            "BigramGuard: start-detect rid=%s out_len=%d last_ch='%s' is_start=%s tail=['%s']",
-            str(getattr(req, "rid", None)),
-            len(out_ids),
-            ch,
-            str(is_start),
-            tail.replace("\n", "\\n"),
-        )
         return is_start
