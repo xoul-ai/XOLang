@@ -1986,6 +1986,31 @@ class ModelRunner:
             # Normal mode: Put CPU-heavy tasks here. They will be overlapped with the forward pass.
             sampling_info.update_regex_vocab_mask()
         sampling_info.apply_logits_bias(logits_output.next_token_logits)
+        # DEBUG: Log top candidates and blocked ids after apply_logits_bias
+        try:
+            logits = logits_output.next_token_logits
+            if logits is not None and logger.isEnabledFor(logging.INFO):
+                # Log top-10 for first 1-2 rows
+                rows = min(len(logits), 2)
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                for i in range(rows):
+                    topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+                    logger.info(
+                        f"PREPROC_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
+                    )
+                    if hard and hard[i] is not None and hard[i].numel() > 0:
+                        ids = hard[i]
+                        sample_ids = ids[: min(12, ids.numel())]
+                        vals = logits[i, sample_ids].tolist()
+                        logger.info(
+                            f"PREPROC_BLOCKS: batch_idx={i} blocked_count={int(ids.numel())} sample_blocked_ids={sample_ids.tolist()} sample_logits={vals}"
+                        )
+        except Exception:
+            pass
 
     def sample(
         self,
@@ -2018,6 +2043,22 @@ class ModelRunner:
             forward_batch.top_logprobs_nums,
             forward_batch.token_ids_logprobs,
         )
+        # DEBUG: If any sampled token is in the blocked set, log it loudly
+        try:
+            hard = (
+                forward_batch.sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                if forward_batch.sampling_info.penalizer_orchestrator is not None
+                else None
+            )
+            if hard:
+                for i, tid in enumerate(next_token_ids.tolist()):
+                    ids = hard[i]
+                    if ids is not None and (tid in set(ids.tolist())):
+                        logger.error(
+                            f"SAMPLED_BLOCKED_TOKEN: batch_idx={i} token_id={tid} blocked_set_size={int(ids.numel())}"
+                        )
+        except Exception:
+            pass
         return next_token_ids
 
     @property

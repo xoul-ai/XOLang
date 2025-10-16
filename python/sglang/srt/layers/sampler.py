@@ -61,17 +61,31 @@ class Sampler(nn.Module):
         """
         logits = logits_output.next_token_logits
 
-        # DIAGNOSTIC: Check if bigram-blocked tokens are still -inf at sampling time
-        if len(logits) > 0:
-            check_tids = [3409, 9319, 36699]
-            for i in range(min(len(logits), 2)):  # Check first 2 batch items
-                for tid in check_tids:
-                    if tid < logits.shape[1]:
-                        logger.info(f"SAMPLER_PRE_SAMPLE: batch_idx={i} token_id={tid} logit_value={logits[i, tid].item()}")
+        # DIAGNOSTIC: Log top10 before any additional processing
+        try:
+            if logger.isEnabledFor(logging.INFO):
+                rows = min(len(logits), 2)
+                for i in range(rows):
+                    topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+                    logger.info(
+                        f"SAMPLER_ENTER_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
+                    )
+        except Exception:
+            pass
 
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+                        logger.info(
+                            f"SAMPLER_AFTER_CUSTOM_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
+                        )
+            except Exception:
+                pass
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
         try:
@@ -98,6 +112,17 @@ class Sampler(nn.Module):
                         logger.info(
                             f"SAMPLER_REAPPLY: batch_idx={bi} blocked_count={int(ids.numel())} sample_blocked_ids={sample_ids.tolist()} sample_logits={vals}"
                         )
+            # Also show top10 after enforcing
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+                        logger.info(
+                            f"SAMPLER_AFTER_ENFORCE_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
+                        )
+            except Exception:
+                pass
         except Exception:
             # Never break sampling due to diagnostics
             pass
@@ -123,8 +148,62 @@ class Sampler(nn.Module):
 
             # Post process logits
             logits.div_(sampling_info.temperatures)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        logger.info(
+                            f"SAMPLER_TEMPERATURE_APPLIED: batch_idx={i} first3_temps={sampling_info.temperatures[:3].view(-1).tolist()}"
+                        )
+            except Exception:
+                pass
             logits[:] = torch.softmax(logits, dim=-1)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+                        logger.info(
+                            f"SAMPLER_AFTER_SOFTMAX_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_probs={[float(x) for x in topk.values]}"
+                        )
+            except Exception:
+                pass
             probs = logits
+
+            # Belt-and-suspenders: zero out blocked ids on probs and renormalize
+            try:
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    # Zero masked indices
+                    for bi, ids in enumerate(hard):
+                        if ids is None or (hasattr(ids, "numel") and ids.numel() == 0):
+                            continue
+                        probs[bi, ids] = 0.0
+                    # Renormalize each row to sum 1.0 (avoid div by zero)
+                    row_sums = probs.sum(dim=-1, keepdim=True)
+                    zero_mask = row_sums.squeeze(-1) == 0
+                    if torch.any(~zero_mask):
+                        probs[~zero_mask] = probs[~zero_mask] / row_sums[~zero_mask]
+                    if torch.any(zero_mask):
+                        # If everything got zeroed (pathological), fall back to original softmax already in `probs`
+                        pass
+                    if logger.isEnabledFor(logging.INFO):
+                        # Log a brief summary for first 2 rows
+                        for bi in range(min(len(hard), 2)):
+                            ids = hard[bi]
+                            if ids is None or (hasattr(ids, "numel") and ids.numel() == 0):
+                                continue
+                            sample_ids = ids[: min(8, ids.numel())]
+                            vals = probs[bi, sample_ids].tolist()
+                            logger.info(
+                                f"SAMPLER_ZERO_MASK: batch_idx={bi} sample_blocked_ids={sample_ids.tolist()} sample_probs={vals}"
+                            )
+            except Exception:
+                pass
             del logits
 
             if True:  # Keep this redundant check to simplify some internal code sync
@@ -199,6 +278,13 @@ class Sampler(nn.Module):
                 group=self.tp_sync_group,
             )
 
+        try:
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    f"SAMPLER_PICKED: next_token_ids={batch_next_token_ids.tolist()}"
+                )
+        except Exception:
+            pass
         return batch_next_token_ids
 
 
