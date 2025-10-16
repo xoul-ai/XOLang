@@ -270,9 +270,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 if cp.get("unigrams_text"):
                     return True
                 # Also enable if start-bigram guard is explicitly configured
-                if cp.get("ban_start_bigram_the_word_hard") or float(
-                    cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0
-                ) != 0.0:
+                if (
+                    cp.get("ban_start_bigram_the_word_hard")
+                    or float(cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0)
+                    != 0.0
+                ):
                     return True
         return False
 
@@ -363,11 +365,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 "!",
                 ":",
                 ";",
-                "'",
-                '"',
-                "’",
-                "”",
-                "*",
             ]
             for w in words_with_variants:
                 # Build surfaces for plain word, space+word, and all quote-like
@@ -415,8 +412,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # Only handle raw phrase with a single space: "The word" / "the word".
             if bigram_bias != 0.0 or bigram_hard:
                 second_ids: Set[int] = set()
-                # Only the space-prefixed surface to capture typical tokenizers (e.g., BPE)
-                second_surfaces = [" word"]
+                # Handle both space-prefixed and no-space variants to be robust
+                # to tokenizers that split the space separately.
+                second_surfaces = [" word", "word"]
                 for s in second_surfaces:
                     try:
                         ids = tokenizer.encode(s, add_special_tokens=False)
@@ -466,7 +464,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             if (
                 second_ids is not None
                 and second_ids.numel() > 0
-                and int(self.generated_counts[i].item()) < int(self.guard_window[i].item())
+                and int(self.generated_counts[i].item())
+                < int(self.guard_window[i].item())
                 and self._starts_with_word(req, target="the")
             ):
                 if bool(self.bigram_hard[i].item()):
