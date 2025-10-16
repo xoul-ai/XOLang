@@ -319,8 +319,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     f" '{w}",
                     f"*{w}",
                     f" *{w}",
-                    f"*'{w}",
-                    f" *'{w}",
                 ]
                 surfaces = []
                 for s in base_surfaces:
