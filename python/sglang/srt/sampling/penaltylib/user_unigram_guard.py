@@ -156,10 +156,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     if low and (low not in STOPWORDS):
                         banned_words.add(low)
                 if banned_words and 0 < vocab_size <= 200000:
-                    # Build set of leading chars to ignore (spaces + quotes)
+                    # Build set of leading chars to ignore (spaces + quotes + SentencePiece space)
                     ignore_leading = (
                         "\u0020\n\t\r\f\v\u00a0\u2009\u202f\u3000\u1680"
                         "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u205f\u00ad\u180e"
+                        "\u2581"  # SentencePiece space character
                     )
                     for q in self._OPENING_QUOTES:
                         ignore_leading += q

@@ -80,7 +80,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     continue
                 if not s:
                     continue
-                s_low = s.lstrip().lower()
+                # Normalize SentencePiece space character (U+2581) to regular space
+                s_norm = s.replace("\u2581", " ")
+                s_low = s_norm.lstrip().lower()
                 if not s_low.startswith("the word"):
                     continue
                 # boundary after "word": next char must be non-alpha or absent
@@ -104,7 +106,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     continue
                 if not s:
                     continue
-                sl = s.lower()
+                # Normalize SentencePiece space character (U+2581) to regular space
+                s_norm = s.replace("\u2581", " ")
+                sl = s_norm.lower()
                 if sl.startswith(" word"):
                     # check boundary after word
                     pos = len(" word")
