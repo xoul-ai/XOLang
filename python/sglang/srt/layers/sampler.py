@@ -27,6 +27,7 @@ if is_cuda():
 logger = logging.getLogger(__name__)
 
 SYNC_TOKEN_IDS_ACROSS_TP = get_bool_env_var("SYNC_TOKEN_IDS_ACROSS_TP")
+SYNC_BLOCKED_IDS_ACROSS_TP = get_bool_env_var("SYNC_BLOCKED_IDS_ACROSS_TP")
 RETURN_ORIGINAL_LOGPROB = get_bool_env_var("RETURN_ORIGINAL_LOGPROB")
 
 
@@ -86,6 +87,58 @@ class Sampler(nn.Module):
                         )
             except Exception:
                 pass
+
+        # Optionally synchronize blocked ids across TP to avoid rank divergence
+        try:
+            if SYNC_BLOCKED_IDS_ACROSS_TP and dist.is_initialized() and self.tp_sync_group is not None:
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    # Compute local max length
+                    local_max = 0
+                    for ids in hard:
+                        if ids is not None:
+                            local_max = max(local_max, int(ids.numel()))
+                    # Get global max across TP ranks
+                    local_max_tensor = torch.tensor([local_max], device=logits.device, dtype=torch.int32)
+                    dist.all_reduce(local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group)
+                    max_len = int(local_max_tensor.item())
+                    if max_len > 0:
+                        B = len(hard)
+                        pad = torch.full((B, max_len), -1, device=logits.device, dtype=torch.int64)
+                        for i, ids in enumerate(hard):
+                            if ids is None or ids.numel() == 0:
+                                continue
+                            l = min(int(ids.numel()), max_len)
+                            pad[i, :l] = ids[:l]
+                        # All-gather across TP
+                        world_size = dist.get_world_size(self.tp_sync_group)
+                        gathered = [torch.empty_like(pad) for _ in range(world_size)]
+                        dist.all_gather(gathered, pad, group=self.tp_sync_group)
+                        # Union per row
+                        for i in range(B):
+                            union = []
+                            for t in gathered:
+                                row = t[i]
+                                valid = row[row >= 0]
+                                if valid.numel() > 0:
+                                    union.append(valid)
+                            if union:
+                                merged = torch.unique(torch.cat(union))
+                                hard[i] = merged
+                        if logger.isEnabledFor(logging.INFO):
+                            # Log a small summary
+                            for bi in range(min(B, 2)):
+                                ids = hard[bi]
+                                if ids is not None and ids.numel() > 0:
+                                    logger.info(
+                                        f"SAMPLER_SYNC_BLOCKS: batch_idx={bi} union_blocked_count={int(ids.numel())} sample_ids={ids[:min(8, ids.numel())].tolist()}"
+                                    )
+        except Exception:
+            pass
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
         try:
