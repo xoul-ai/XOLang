@@ -21,7 +21,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     # Characters that should count as a start when appearing before the next token.
     # Historically included '*', keep it for markdown/emphasis scenarios.
-    _OPENING_QUOTES = QUOTE_CHARS | {"*"}
+    _OPENING_QUOTES = QUOTE_CHARS
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
         self.orchestrator = orchestrator
