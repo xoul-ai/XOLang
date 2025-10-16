@@ -1649,7 +1649,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         self.sampling_info.filter_batch(keep_indices, keep_indices_device)
         if self.spec_info:
-            self.spec_info.filter_batch(keep_indices_device)
+            # Speculative info must be reindexed to match kept requests.
+            # Use explicit indices (not length-based slicing) to maintain order.
+            self.spec_info.filter_batch(keep_indices_device, has_been_filtered=False)
 
     def merge_batch(self, other: "ScheduleBatch"):
         # Penalizer orchestrator must be merged before Batch.reqs is merged. This is because
