@@ -482,7 +482,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             decided = False
             # Path A: use cumulated state if available
             try:
-                if bool(self.pending_after_the_at_start[i].item()):
+                pending = bool(self.pending_after_the_at_start[i].item())
+                logger.info(f"BigramGuard COMPUTE_NOW_PATH_A: rid={rid} idx={i} pending_after_the={pending}")
+                if pending:
                     need_space_variant = bool(self.suffix_variant_space[i].item())
                     if need_space_variant and self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
                         out[i] = self.word_with_space_ids
@@ -490,8 +492,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     elif (not need_space_variant) and self.word_no_space_ids is not None and self.word_no_space_ids.numel() > 0:
                         out[i] = self.word_no_space_ids
                         decided = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.info(f"BigramGuard COMPUTE_NOW_PATH_A: rid={rid} idx={i} exception={e}")
             if decided:
                 logger.info(
                     f"BigramGuard COMPUTE_NOW: rid={getattr(req,'rid',None)} idx={i} path=A pending_after_the={bool(self.pending_after_the_at_start[i].item())} variant_space={bool(self.suffix_variant_space[i].item())} ids={(out[i][:min(8,out[i].numel())].tolist() if out[i] is not None else [])}"
@@ -499,13 +501,19 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
             # Path B: infer from request state if cumulated state not set yet on this rank
             first_ids_set2 = self.first_token_ids_set_per_req[i]
+            sample_first_ids = sorted(list(first_ids_set2))[:10] if first_ids_set2 else []
+            logger.info(f"BigramGuard COMPUTE_NOW_PATH_B: rid={rid} idx={i} has_first_ids_set={first_ids_set2 is not None} set_size={len(first_ids_set2) if first_ids_set2 else 0} sample_ids={sample_first_ids} out_ids_len={len(out_ids_list)}")
             if first_ids_set2 and out_ids_list:
                 is_start_here = len(out_ids_list) == 1 or self._is_start_position(req)
+                logger.info(f"BigramGuard COMPUTE_NOW_PATH_B: rid={rid} idx={i} is_start_here={is_start_here} out_ids_len={len(out_ids_list)}")
                 if is_start_here:
                     last_id2 = int(out_ids_list[-1])
-                    if last_id2 in first_ids_set2:
+                    is_match = last_id2 in first_ids_set2
+                    logger.info(f"BigramGuard COMPUTE_NOW_PATH_B: rid={rid} idx={i} last_id2={last_id2} is_in_first_ids_set={is_match} first_ids_set_size={len(first_ids_set2)}")
+                    if is_match:
                         req_map2 = self.first_token_requires_space_per_req[i] or {}
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
+                        logger.info(f"BigramGuard COMPUTE_NOW_PATH_B: rid={rid} idx={i} MATCHED! need_space_variant={need_space_variant2}")
                         if need_space_variant2 and self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
                             out[i] = self.word_with_space_ids
                             logger.info(
@@ -516,6 +524,11 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             logger.info(
                                 f"BigramGuard COMPUTE_NOW: rid={getattr(req,'rid',None)} idx={i} path=B variant=no_space ids={self.word_no_space_ids[:min(8,self.word_no_space_ids.numel())].tolist()}"
                             )
+                    else:
+                        logger.info(f"BigramGuard COMPUTE_NOW_PATH_B: rid={rid} idx={i} last_id2={last_id2} NOT in first_ids_set (576 in set? {576 in first_ids_set2})")
+        # Final logging
+        non_none_count = sum(1 for x in out if x is not None)
+        logger.info(f"BigramGuard COMPUTE_NOW_RETURN: returning list with {non_none_count} non-None entries out of {len(out)}")
         return out
 
     def _filter(self, keep_indices: torch.Tensor):

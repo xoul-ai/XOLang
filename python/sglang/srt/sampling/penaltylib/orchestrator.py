@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import logging
 import weakref
 from typing import TYPE_CHECKING, Optional, Set, Type
 
@@ -8,6 +9,8 @@ import torch
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import ScheduleBatch
+
+logger = logging.getLogger(__name__)
 
 
 class BatchedPenalizerOrchestrator:
@@ -155,20 +158,43 @@ class BatchedPenalizerOrchestrator:
 
         merged: list = [None] * len(reqs)
         for pen in self.penalizers.values():
+            pen_name = pen.__class__.__name__
             # Prefer compute-now
-            lst = pen.get_computed_hard_block_ids()
+            lst_computed = pen.get_computed_hard_block_ids()
+            logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} computed_result={lst_computed is not None} computed_len={len(lst_computed) if lst_computed else 0}")
+
+            # Check if lst has any non-None values
+            has_values = False
+            if lst_computed is not None:
+                has_values = any(x is not None for x in lst_computed)
+                if has_values and len(lst_computed) > 0:
+                    non_none_count = sum(1 for x in lst_computed if x is not None)
+                    logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} computed_has_values=True non_none_count={non_none_count}")
+
+            lst = lst_computed
+            if not has_values:
+                # fall back to last ids if compute-now not available or all None
+                lst_last = pen.get_last_hard_block_ids()
+                logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} falling_back_to_last last_result={lst_last is not None} last_len={len(lst_last) if lst_last else 0}")
+                lst = lst_last
+
             if not lst:
-                # fall back to last ids if compute-now not available
-                lst = pen.get_last_hard_block_ids()
-            if not lst:
+                logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} final_lst=None, skipping")
                 continue
+
             for i, ids in enumerate(lst):
                 if ids is None:
                     continue
                 if merged[i] is None:
                     merged[i] = ids
+                    logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} req_idx={i} setting_ids count={ids.numel() if hasattr(ids, 'numel') else len(ids)}")
                 else:
                     merged[i] = torch.unique(torch.cat([merged[i], ids]))
+                    logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} req_idx={i} merging_ids new_count={merged[i].numel()}")
+
+        # Final result
+        non_none_merged = sum(1 for x in merged if x is not None)
+        logger.info(f"ORCH get_hard_block_ids_now: FINAL merged_non_none_count={non_none_merged}")
         return merged
 
 
