@@ -182,6 +182,50 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 # Otherwise, we need next token that starts with " word"
                 requires_space[fid] = not (decoded.endswith(" "))
 
+            # Augment: scan entire vocab for tokens that decode to a THE-like start after stripping leading quotes/spaces
+            try:
+                vocab_size = self.orchestrator.vocab_size
+            except Exception:
+                vocab_size = None
+            if vocab_size is not None:
+                ignore_leading = " "
+                for q in QUOTE_CHARS:
+                    ignore_leading += q
+                added = 0
+                add_cap = 8192
+                for tid in range(vocab_size):
+                    if tid in first_ids:
+                        continue
+                    try:
+                        s = tok.decode([tid])
+                    except Exception:
+                        continue
+                    if not s:
+                        continue
+                    k = 0
+                    L = len(s)
+                    while k < L and (s[k] in ignore_leading):
+                        k += 1
+                    if k >= L:
+                        continue
+                    ch0 = s[k]
+                    if not ("A" <= ch0 <= "Z" or "a" <= ch0 <= "z"):
+                        continue
+                    rem = s[k:].lower()
+                    # Require boundary after 'the'
+                    if rem.startswith("the"):
+                        end = 3
+                        if end < len(rem) and rem[end : end + 1].isalpha():
+                            continue
+                        fid = int(tid)
+                        first_ids.add(fid)
+                        added += 1
+                        # Most THE tokens won't end with space; default mapping
+                        if fid not in requires_space:
+                            requires_space[fid] = True
+                    if added >= add_cap:
+                        break
+
             if first_ids:
                 self.first_token_ids_per_req[i] = torch.tensor(
                     sorted(first_ids), dtype=torch.int64, device=device
@@ -314,27 +358,56 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 decoded_tops,
             )
 
-            # Two-step guard: if the last emitted token at a start was a first-token for "The",
-            # then block appropriate second-token IDs
-            if self.pending_after_the_at_start[i]:
+            # Two-step guard: proactively detect if we are immediately after a THE token at a start,
+            # even if cumulate missed due to overlap scheduling. If so, set variant and apply masks.
+            just_after_the = False
+            first_ids_set2 = self.first_token_ids_set_per_req[i]
+            if first_ids_set2 and out_ids_list:
+                # We consider we are at start of sentence if out_len == 1 or if start-detect on tail of decoded prefix is True
+                is_start_here = False
+                if len(out_ids_list) == 1:
+                    is_start_here = True
+                else:
+                    # Reuse start detection logic
+                    is_start_here = self._is_start_position(req)
+                last_id2 = int(out_ids_list[-1])
+                if is_start_here and (last_id2 in first_ids_set2):
+                    just_after_the = True
+                    # Establish variant if not already set
+                    if not bool(self.active_after_the[i].item()):
+                        self.active_after_the[i] = True
+                        req_map2 = self.first_token_requires_space_per_req[i] or {}
+                        need_space_variant2 = bool(req_map2.get(last_id2, True))
+                        self.suffix_variant_space[i] = need_space_variant2
+                        self.suffix_progress[i] = 0
+                        logger.info(
+                            "BigramGuard: detected post-THE at apply rid=%s idx=%d last_id=%d need_space_variant=%s",
+                            str(rid),
+                            i,
+                            last_id2,
+                            str(need_space_variant2),
+                        )
+
+            # Two-step guard: if flagged pending or detected just-after-the, block appropriate second-token IDs
+            if self.pending_after_the_at_start[i] or just_after_the:
                 # Use variant decided at cumulate time to avoid drift
                 need_space_variant = bool(self.suffix_variant_space[i].item())
                 if need_space_variant and self.word_with_space_ids is not None:
-                        logits[i, self.word_with_space_ids] = -float("inf")
-                        logger.info(
-                            "BigramGuard: blocked second token set variant=space rid=%s idx=%d size=%d",
-                            str(rid),
-                            i,
-                            int(self.word_with_space_ids.numel()),
-                        )
+                    logits[i, self.word_with_space_ids] = -float("inf")
+                    logger.info(
+                        "BigramGuard: blocked second token set variant=space rid=%s idx=%d size=%d",
+                        str(rid),
+                        i,
+                        int(self.word_with_space_ids.numel()),
+                    )
                 elif (not need_space_variant) and self.word_no_space_ids is not None:
-                        logits[i, self.word_no_space_ids] = -float("inf")
-                        logger.info(
-                            "BigramGuard: blocked second token set variant=no_space rid=%s idx=%d size=%d",
-                            str(rid),
-                            i,
-                            int(self.word_no_space_ids.numel()),
-                        )
+                    logits[i, self.word_no_space_ids] = -float("inf")
+                    logger.info(
+                        "BigramGuard: blocked second token set variant=no_space rid=%s idx=%d size=%d",
+                        str(rid),
+                        i,
+                        int(self.word_no_space_ids.numel()),
+                    )
                 # Reset flag after applying for this step
                 self.pending_after_the_at_start[i] = False
 
