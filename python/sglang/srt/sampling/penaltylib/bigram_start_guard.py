@@ -461,6 +461,34 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
     def get_last_hard_block_ids(self):
         return self._last_hard_blocks
 
+    def get_computed_hard_block_ids(self):
+        # Compute hard blocks for current step independent of local _apply timing
+        reqs = self.orchestrator.reqs()
+        if not reqs:
+            return None
+        out: List[Optional[torch.Tensor]] = [None] * len(reqs)
+        for i, req in enumerate(reqs):
+            out_ids_list = getattr(req, "output_ids", []) or []
+            # BOS: block any single-token that decodes to "the word..." if we have it
+            if len(out_ids_list) == 0 and self.single_token_blacklist is not None and self.single_token_blacklist.numel() > 0:
+                out[i] = self.single_token_blacklist
+                continue
+            # Two-step guard: if immediately after a THE token at a start, block second-token set
+            first_ids_set = self.first_token_ids_set_per_req[i]
+            if first_ids_set and out_ids_list:
+                # Start position if the emission is the first token of reply, or start-detection says true
+                is_start_here = len(out_ids_list) == 1 or self._is_start_position(req)
+                if is_start_here:
+                    last_id = int(out_ids_list[-1])
+                    if last_id in first_ids_set:
+                        req_map = self.first_token_requires_space_per_req[i] or {}
+                        need_space_variant = bool(req_map.get(last_id, True))
+                        if need_space_variant and self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
+                            out[i] = self.word_with_space_ids
+                        elif (not need_space_variant) and self.word_no_space_ids is not None and self.word_no_space_ids.numel() > 0:
+                            out[i] = self.word_no_space_ids
+        return out
+
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
         self.pending_after_the_at_start = self.pending_after_the_at_start[keep]

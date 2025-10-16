@@ -300,3 +300,30 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     def get_last_hard_block_ids(self):
         return self._last_hard_blocks
+
+    def get_computed_hard_block_ids(self):
+        # Compute current hard blocks based on request state (BOS / start detection)
+        reqs = self.orchestrator.reqs()
+        if not reqs:
+            return None
+        out: List[Optional[torch.Tensor]] = [None] * len(reqs)
+        for i, req in enumerate(reqs):
+            first_ids = self.first_token_ids[i]
+            if first_ids is None or (hasattr(first_ids, "numel") and first_ids.numel() == 0):
+                continue
+            # Respect window if we can infer tokens generated
+            try:
+                total_emitted = len(getattr(req, "output_ids", []) or [])
+                if total_emitted >= int(self.guard_window[i].item()):
+                    continue
+            except Exception:
+                pass
+            out_ids_list = getattr(req, "output_ids", []) or []
+            is_bos = len(out_ids_list) == 0
+            if is_bos and bool(self.hard_at_bos[i].item()):
+                out[i] = first_ids
+                continue
+            if (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+                if self._is_start_position(req):
+                    out[i] = first_ids
+        return out

@@ -238,7 +238,8 @@ class SamplingBatchInfo:
         """
         if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
             return
-        hard = self.penalizer_orchestrator.get_hard_block_ids()
+        # Prefer compute-now ids to avoid overlap/timing issues
+        hard = self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
             return
         # Apply per-row masks

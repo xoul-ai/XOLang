@@ -139,6 +139,38 @@ class BatchedPenalizerOrchestrator:
                     merged[i] = torch.unique(torch.cat([merged[i], ids]))
         return merged
 
+    def get_hard_block_ids_now(self):
+        """Compute per-request hard-block token IDs for the current step.
+
+        This asks each penalizer to compute the to-be-blocked ids directly from
+        the current request state (BOS/start detection etc.), avoiding reliance
+        on whether `_apply` has already run on this rank.
+        If a penalizer does not support compute-now, falls back to last ids.
+        """
+        if not self.is_required:
+            return None
+        reqs = self.reqs()
+        if not reqs:
+            return None
+
+        merged: list = [None] * len(reqs)
+        for pen in self.penalizers.values():
+            # Prefer compute-now
+            lst = pen.get_computed_hard_block_ids()
+            if not lst:
+                # fall back to last ids if compute-now not available
+                lst = pen.get_last_hard_block_ids()
+            if not lst:
+                continue
+            for i, ids in enumerate(lst):
+                if ids is None:
+                    continue
+                if merged[i] is None:
+                    merged[i] = ids
+                else:
+                    merged[i] = torch.unique(torch.cat([merged[i], ids]))
+        return merged
+
 
 class _BatchedPenalizer(abc.ABC):
     """
@@ -195,6 +227,10 @@ class _BatchedPenalizer(abc.ABC):
 
     # Optional: penalizers can expose the ids they hard-blocked at last _apply
     def get_last_hard_block_ids(self):
+        return None
+
+    # Optional: compute hard-block ids based on current request state
+    def get_computed_hard_block_ids(self):
         return None
 
     @abc.abstractmethod

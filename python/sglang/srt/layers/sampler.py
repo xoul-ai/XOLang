@@ -92,7 +92,7 @@ class Sampler(nn.Module):
         try:
             if SYNC_BLOCKED_IDS_ACROSS_TP and dist.is_initialized() and self.tp_sync_group is not None:
                 hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
                     if sampling_info.penalizer_orchestrator is not None
                     else None
                 )
@@ -150,7 +150,7 @@ class Sampler(nn.Module):
             if logger.isEnabledFor(logging.INFO):
                 # Log a brief summary of blocked ids (first 2 rows)
                 hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
                     if sampling_info.penalizer_orchestrator is not None
                     else None
                 )
@@ -226,7 +226,7 @@ class Sampler(nn.Module):
             # Belt-and-suspenders: zero out blocked ids on probs and renormalize
             try:
                 hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
                     if sampling_info.penalizer_orchestrator is not None
                     else None
                 )
