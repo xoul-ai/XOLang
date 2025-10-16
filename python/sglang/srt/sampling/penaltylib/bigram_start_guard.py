@@ -262,13 +262,30 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         if output_ids is None or output_ids.numel() == 0:
             return
         for i, req in enumerate(reqs):
+            tok = getattr(req, "tokenizer", None)
+            last_id = int(output_ids[i].item())
+            rid = getattr(req, "rid", None)
+
+            # LOG: Show what token was actually generated
+            if tok is not None:
+                try:
+                    decoded = tok.decode([last_id])
+                    logger.info(
+                        "BigramGuard CUMULATE: rid=%s idx=%d generated_tid=%d decoded=%s",
+                        str(rid),
+                        i,
+                        last_id,
+                        repr(decoded),
+                    )
+                except Exception:
+                    pass
+
             first_ids_set = self.first_token_ids_set_per_req[i]
             if not first_ids_set:
                 continue
             # Only trigger at sentence/reply starts
             if not self._is_start_position(req):
                 continue
-            last_id = int(output_ids[i].item())
             if int(last_id) in first_ids_set:
                 self.pending_after_the_at_start[i] = True
                 self.active_after_the[i] = True
@@ -277,7 +294,6 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 need_space_variant = bool(req_map.get(last_id, True))
                 self.suffix_variant_space[i] = need_space_variant
                 self.suffix_progress[i] = 0
-                rid = getattr(req, "rid", None)
                 logger.info(
                     "BigramGuard: pending second-token ban set rid=%s idx=%d last_id=%d need_space_variant=%s",
                     str(rid),
@@ -366,6 +382,22 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         int(self.word_with_space_ids.numel()),
                         self.word_with_space_ids.tolist(),
                     )
+                    # LOG: Show top candidates after blocking
+                    top_k = torch.topk(logits[i], k=10)
+                    top_ids = top_k.indices.tolist()
+                    top_vals = top_k.values.tolist()
+                    if tok is not None:
+                        try:
+                            top_decoded = [tok.decode([tid]) for tid in top_ids]
+                            logger.info(
+                                "BigramGuard AFTER_BLOCK: rid=%s idx=%d top10_tids=%s top10_decoded=%s",
+                                str(rid),
+                                i,
+                                top_ids,
+                                [repr(d) for d in top_decoded],
+                            )
+                        except Exception:
+                            pass
                 elif (not need_space_variant) and self.word_no_space_ids is not None:
                     logits[i, self.word_no_space_ids] = -float("inf")
                     logger.info(
