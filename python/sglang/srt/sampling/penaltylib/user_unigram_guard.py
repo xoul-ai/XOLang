@@ -338,7 +338,21 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
-            end_punct = [",", ".", "?", "!", ":", ";"]
+            # Include common trailing punctuation and quote-like enders. This helps
+            # harvest first-token IDs in tokenizers that fuse trailing chars.
+            end_punct = [
+                ",",
+                ".",
+                "?",
+                "!",
+                ":",
+                ";",
+                "'",
+                '"',
+                "’",
+                "”",
+                "*",
+            ]
             for w in words_with_variants:
                 # Build surfaces for plain word, space+word, and all quote-like
                 # prefixes with and without a leading space to mirror tokenizer contexts.
