@@ -382,6 +382,15 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         int(self.word_with_space_ids.numel()),
                         self.word_with_space_ids.tolist(),
                     )
+                    # LOG: Verify blocking worked by checking specific logit values
+                    blocked_vals = logits[i, self.word_with_space_ids].tolist()
+                    logger.info(
+                        "BigramGuard VERIFY_BLOCK: rid=%s idx=%d blocked_tids=%s blocked_logit_values=%s",
+                        str(rid),
+                        i,
+                        self.word_with_space_ids.tolist(),
+                        blocked_vals,
+                    )
                     # LOG: Show top candidates after blocking
                     top_k = torch.topk(logits[i], k=10)
                     top_ids = top_k.indices.tolist()
@@ -432,6 +441,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             next_tid,
                             str(bool(self.suffix_variant_space[i].item())),
                         )
+        return logits
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
