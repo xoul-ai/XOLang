@@ -242,6 +242,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 bias = float(self.bias_vals[i].item())
                 if bias != 0.0:
                     logits[i, first_ids] += bias
+        return logits
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices

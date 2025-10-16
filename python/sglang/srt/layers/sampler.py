@@ -61,6 +61,14 @@ class Sampler(nn.Module):
         """
         logits = logits_output.next_token_logits
 
+        # DIAGNOSTIC: Check if bigram-blocked tokens are still -inf at sampling time
+        if len(logits) > 0:
+            check_tids = [3409, 9319, 36699]
+            for i in range(min(len(logits), 2)):  # Check first 2 batch items
+                for tid in check_tids:
+                    if tid < logits.shape[1]:
+                        logger.info(f"SAMPLER_PRE_SAMPLE: batch_idx={i} token_id={tid} logit_value={logits[i, tid].item()}")
+
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
