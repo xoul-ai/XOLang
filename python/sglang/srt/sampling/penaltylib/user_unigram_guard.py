@@ -286,12 +286,20 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.bias_vals: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.float32, device=device
         )
+        # Optional start-bigram guard specifically for discouraging "The word"
+        self.bigram_bias_vals: torch.Tensor = torch.zeros(
+            (len(reqs),), dtype=torch.float32, device=device
+        )
+        self.bigram_hard: torch.Tensor = torch.zeros(
+            (len(reqs),), dtype=torch.bool, device=device
+        )
         self.generated_counts: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.int32, device=device
         )
 
         self.first_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
         self.full_prefixes: List[Optional[List[List[int]]]] = [None] * len(reqs)
+        self.bigram_second_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
 
         for i, req in enumerate(reqs):
             cp = getattr(req.sampling_params, "custom_params", None) or {}
@@ -301,23 +309,25 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             hard_bos = bool(cp.get("ban_user_unigram_hard_at_bos", True))
             hard_all = bool(cp.get("ban_user_unigram_hard_at_all_starts", False))
             bias = float(cp.get("ban_user_unigram_bias", -0.9) or -0.9)
+            # Start-bigram ("The word") controls — default disabled (non-interfering)
+            bigram_bias = float(cp.get("ban_start_bigram_the_word_bias", 0.0) or 0.0)
+            bigram_hard = bool(cp.get("ban_start_bigram_the_word_hard", False))
 
             self.guard_window[i] = window
             self.hard_at_bos[i] = hard_bos
             self.hard_at_all_starts[i] = hard_all
             self.bias_vals[i] = bias
+            self.bigram_bias_vals[i] = bigram_bias
+            self.bigram_hard[i] = bigram_hard
 
-            if not text:
-                continue
+            # Continue to compute bigram surfaces even if `text` is empty
 
             tokenizer = getattr(req, "tokenizer", None)
             if tokenizer is None:
                 # If tokenizer is unavailable, skip for this request
                 continue
 
-            matches = re.findall(r"[A-Za-z]+", text)
-            if not matches:
-                continue
+            matches = re.findall(r"[A-Za-z]+", text) if text else []
 
             cap = 1500
             seen: Set[str] = set()
@@ -395,6 +405,40 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 self.first_token_ids[i] = None
                 self.full_prefixes[i] = None
 
+            # Precompute second-word first token IDs for the bigram "The word"
+            # We handle contexts like: "The word", "The \"word", "The *word", etc.
+            if bigram_bias != 0.0 or bigram_hard:
+                second_ids: Set[int] = set()
+                second_surfaces = [" word"]
+                for q in self._OPENING_QUOTES:
+                    second_surfaces.append(f" {q}word")
+                for s in second_surfaces:
+                    try:
+                        ids = tokenizer.encode(s, add_special_tokens=False)
+                    except Exception:
+                        ids = []
+                    if not ids:
+                        continue
+                    try:
+                        first_idx = 0
+                        for j, tok in enumerate(ids):
+                            token_str = tokenizer.decode([tok])
+                            if re.search(r"[A-Za-z]", token_str):
+                                first_idx = j
+                                break
+                        second_ids.add(int(ids[first_idx]))
+                    except Exception:
+                        second_ids.add(int(ids[0]))
+
+                if second_ids:
+                    self.bigram_second_token_ids[i] = torch.tensor(
+                        sorted(second_ids), dtype=torch.int64, device=device
+                    )
+                else:
+                    self.bigram_second_token_ids[i] = None
+            else:
+                self.bigram_second_token_ids[i] = None
+
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
             return
@@ -405,6 +449,28 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
 
         for i in range(B):
+            # Start-bigram guard: discourage "The word" as the very beginning phrase.
+            # This runs independently of the unigram start guard and is only active
+            # if configured via custom params.
+            req = reqs[i]
+            second_ids = (
+                self.bigram_second_token_ids[i]
+                if i < len(self.bigram_second_token_ids)
+                else None
+            )
+            if (
+                second_ids is not None
+                and second_ids.numel() > 0
+                and int(self.generated_counts[i].item()) < int(self.guard_window[i].item())
+                and self._starts_with_word(req, target="the")
+            ):
+                if bool(self.bigram_hard[i].item()):
+                    logits[i, second_ids] = -float("inf")
+                else:
+                    bb = float(self.bigram_bias_vals[i].item())
+                    if bb != 0.0:
+                        logits[i, second_ids] += bb
+
             first_ids = self.first_token_ids[i]
             if first_ids is None or first_ids.numel() == 0:
                 continue
@@ -412,7 +478,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             # 2) Determine whether we are at a start position (BOS or after quotes/punctuation)
-            req = reqs[i]
             _out_ids = getattr(req, "output_ids", None) or []
             is_bos = len(_out_ids) == 0
             is_start = True if is_bos else self._is_start_position(req)
@@ -435,9 +500,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.hard_at_bos = self.hard_at_bos[keep]
         self.hard_at_all_starts = self.hard_at_all_starts[keep]
         self.bias_vals = self.bias_vals[keep]
+        self.bigram_bias_vals = self.bigram_bias_vals[keep]
+        self.bigram_hard = self.bigram_hard[keep]
         self.generated_counts = self.generated_counts[keep]
         self.first_token_ids = [self.first_token_ids[j] for j in keep.tolist()]
         self.full_prefixes = [self.full_prefixes[j] for j in keep.tolist()]
+        self.bigram_second_token_ids = [
+            self.bigram_second_token_ids[j] for j in keep.tolist()
+        ]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
@@ -446,11 +516,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             [self.hard_at_all_starts, their.hard_at_all_starts], dim=0
         )
         self.bias_vals = torch.cat([self.bias_vals, their.bias_vals], dim=0)
+        self.bigram_bias_vals = torch.cat(
+            [self.bigram_bias_vals, their.bigram_bias_vals], dim=0
+        )
+        self.bigram_hard = torch.cat([self.bigram_hard, their.bigram_hard], dim=0)
         self.generated_counts = torch.cat(
             [self.generated_counts, their.generated_counts], dim=0
         )
         self.first_token_ids.extend(their.first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
+        self.bigram_second_token_ids.extend(their.bigram_second_token_ids)
 
     def _is_start_position(self, req) -> bool:
         _out_ids = getattr(req, "output_ids", None) or []
@@ -475,3 +550,37 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         ch = tail[i]
         is_start = ch in self._OPENING_QUOTES or ch in self._SENTENCE_END_CHARS
         return is_start
+
+    def _starts_with_word(self, req, target: str) -> bool:
+        """True if generated output begins with optional quotes/asterisks, then the
+        target word (case-insensitive), and has no additional non-space characters
+        after that word (i.e., immediately after first word)."""
+        _out_ids = getattr(req, "output_ids", None) or []
+        if len(_out_ids) == 0:
+            return False
+        tokenizer = getattr(req, "tokenizer", None)
+        if tokenizer is None:
+            return False
+        try:
+            text = tokenizer.decode(_out_ids)
+        except Exception:
+            return False
+        if not text:
+            return False
+        i = 0
+        n = len(text)
+        # Skip leading spaces
+        while i < n and text[i].isspace():
+            i += 1
+        # Skip any leading quotes/asterisks and spaces following them
+        while i < n and text[i] in self._OPENING_QUOTES:
+            i += 1
+            while i < n and text[i].isspace():
+                i += 1
+        m = re.match(r"([A-Za-z]+)\b", text[i:])
+        if not m or m.group(1).lower() != target.lower():
+            return False
+        # Ensure we're immediately after the first word (ignore trailing spaces)
+        j = i + len(m.group(0))
+        remainder = text[j:]
+        return remainder.strip() == ""
