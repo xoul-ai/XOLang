@@ -73,6 +73,35 @@ class Sampler(nn.Module):
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
 
+        # Reapply hard blocks from penalizers just before sampling to ensure persistence
+        try:
+            before = None
+            if logger.isEnabledFor(logging.INFO):
+                # count how many rows have any hard-blocks
+                pass
+            sampling_info.enforce_hard_blocks(logits)
+            if logger.isEnabledFor(logging.INFO):
+                # Log a brief summary of blocked ids (first 2 rows)
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    for bi in range(min(len(hard), 2)):
+                        ids = hard[bi]
+                        if ids is None or ids.numel() == 0:
+                            continue
+                        # report a few blocked ids and their logits
+                        sample_ids = ids[: min(8, ids.numel())]
+                        vals = logits[bi, sample_ids].tolist()
+                        logger.info(
+                            f"SAMPLER_REAPPLY: batch_idx={bi} blocked_count={int(ids.numel())} sample_blocked_ids={sample_ids.tolist()} sample_logits={vals}"
+                        )
+        except Exception:
+            # Never break sampling due to diagnostics
+            pass
+
         if self.use_nan_detection and torch.any(torch.isnan(logits)):
             logger.warning("Detected errors during sampling! NaN in the logits.")
             logits = torch.where(

@@ -57,6 +57,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             (len(reqs),), dtype=torch.int32, device=device
         )
 
+        # Track hard blocks applied at last step per request (list of 1-D tensors)
+        self._last_hard_blocks: List[Optional[torch.Tensor]] = [None] * len(reqs)
+
         self.first_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
         self.full_prefixes: List[Optional[List[List[int]]]] = [None] * len(reqs)
 
@@ -217,7 +220,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
         reqs = self.orchestrator.reqs()
-
+        # Reset last hard-blocks
+        for j in range(B):
+            self._last_hard_blocks[j] = None
         for i in range(B):
             req = reqs[i]
             first_ids = self.first_token_ids[i]
@@ -236,8 +241,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
             if is_bos and bool(self.hard_at_bos[i].item()):
                 logits[i, first_ids] = -float("inf")
+                self._last_hard_blocks[i] = first_ids
             elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
                 logits[i, first_ids] = -float("inf")
+                self._last_hard_blocks[i] = first_ids
             else:
                 bias = float(self.bias_vals[i].item())
                 if bias != 0.0:
@@ -290,3 +297,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         ch = tail[i]
         is_start = ch in self._OPENING_QUOTES or ch in SENTENCE_END_CHARS
         return is_start
+
+    def get_last_hard_block_ids(self):
+        return self._last_hard_blocks

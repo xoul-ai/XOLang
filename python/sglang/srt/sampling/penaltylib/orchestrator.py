@@ -111,6 +111,34 @@ class BatchedPenalizerOrchestrator:
         for penalizer, their_penalizer in their.penalizers.items():
             self.penalizers[penalizer].merge(their_penalizer)
 
+    def get_hard_block_ids(self):
+        """Collect per-request hard-block token IDs from penalizers.
+
+        Returns a list of Optional[torch.Tensor] of length batch_size. Each
+        entry is a 1-D tensor of token ids that should be hard-blocked for the
+        corresponding request; None or empty tensor means no hard block.
+        """
+        if not self.is_required:
+            return None
+        reqs = self.reqs()
+        if not reqs:
+            return None
+        # Initialize accumulator per request
+        merged: list = [None] * len(reqs)
+        for pen in self.penalizers.values():
+            lst = pen.get_last_hard_block_ids()
+            if not lst:
+                continue
+            for i, ids in enumerate(lst):
+                if ids is None:
+                    continue
+                if merged[i] is None:
+                    merged[i] = ids
+                else:
+                    # union: concatenate then unique
+                    merged[i] = torch.unique(torch.cat([merged[i], ids]))
+        return merged
+
 
 class _BatchedPenalizer(abc.ABC):
     """
@@ -164,6 +192,10 @@ class _BatchedPenalizer(abc.ABC):
         self.prepare()
         their.prepare()
         self._merge(their)
+
+    # Optional: penalizers can expose the ids they hard-blocked at last _apply
+    def get_last_hard_block_ids(self):
+        return None
 
     @abc.abstractmethod
     def _is_required(self) -> bool:

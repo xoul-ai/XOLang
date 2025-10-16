@@ -255,6 +255,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.active_after_the = torch.zeros((len(reqs),), dtype=torch.bool, device=device)
         self.suffix_variant_space = torch.zeros((len(reqs),), dtype=torch.bool, device=device)  # True => use space variant
         self.suffix_progress = torch.zeros((len(reqs),), dtype=torch.int32, device=device)
+        # Track hard blocks applied at last step per request
+        self._last_hard_blocks: List[Optional[torch.Tensor]] = [None] * len(reqs)
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         # Track if we just emitted a first-token for "The" at a start position
@@ -325,12 +327,17 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
         reqs = self.orchestrator.reqs()
+        # Reset last hard-blocks
+        for j in range(len(reqs)):
+            self._last_hard_blocks[j] = None
         for i, req in enumerate(reqs):
             # BOS: Hard block single-token candidates that decode to "the word..." (boundary-aware)
             out_ids_list = getattr(req, "output_ids", []) or []
             rid = getattr(req, "rid", None)
             if len(out_ids_list) == 0 and self.single_token_blacklist is not None:
                 logits[i, self.single_token_blacklist] = -float("inf")
+                if self.single_token_blacklist is not None and self.single_token_blacklist.numel() > 0:
+                    self._last_hard_blocks[i] = self.single_token_blacklist
                 logger.info(
                     "BigramGuard: applied BOS single-token mask rid=%s idx=%d masked=%d",
                     str(rid),
@@ -375,6 +382,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 need_space_variant = bool(self.suffix_variant_space[i].item())
                 if need_space_variant and self.word_with_space_ids is not None:
                     logits[i, self.word_with_space_ids] = -float("inf")
+                    if self.word_with_space_ids is not None and self.word_with_space_ids.numel() > 0:
+                        self._last_hard_blocks[i] = self.word_with_space_ids
                     logger.info(
                         "BigramGuard: blocked second token set variant=space rid=%s idx=%d size=%d blocked_tids=%s",
                         str(rid),
@@ -409,6 +418,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             pass
                 elif (not need_space_variant) and self.word_no_space_ids is not None:
                     logits[i, self.word_no_space_ids] = -float("inf")
+                    if self.word_no_space_ids is not None and self.word_no_space_ids.numel() > 0:
+                        self._last_hard_blocks[i] = self.word_no_space_ids
                     logger.info(
                         "BigramGuard: blocked second token set variant=no_space rid=%s idx=%d size=%d blocked_tids=%s",
                         str(rid),
@@ -433,6 +444,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     if prog == len(seq) - 1:
                         next_tid = int(seq[prog])
                         logits[i, next_tid] = -float("inf")
+                        try:
+                            self._last_hard_blocks[i] = torch.tensor([next_tid], dtype=torch.int64, device=logits.device)
+                        except Exception:
+                            pass
                         rid = getattr(req, "rid", None)
                         logger.info(
                             "BigramGuard: blocked multi-step completion rid=%s idx=%d next_tid=%d variant_space=%s",
@@ -442,6 +457,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                             str(bool(self.suffix_variant_space[i].item())),
                         )
         return logits
+
+    def get_last_hard_block_ids(self):
+        return self._last_hard_blocks
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
