@@ -57,6 +57,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.single_token_blacklist: Optional[torch.Tensor] = None
         self.word_with_space_ids: Optional[torch.Tensor] = None
         self.word_no_space_ids: Optional[torch.Tensor] = None
+        # Canonical token sequences for " word" and "word" (used for multi-step matching)
+        self.suffix_seq_space: Optional[List[int]] = None
+        self.suffix_seq_nospace: Optional[List[int]] = None
 
         # Build shared sets by scanning the vocab once using any tokenizer available.
         # We will attempt using the first non-None tokenizer; if none available, we skip.
@@ -123,6 +126,15 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 self.word_no_space_ids = torch.tensor(
                     sorted(no_space_ids), dtype=torch.int64, device=device
                 )
+            # Canonical encode path for exact suffix matching in multi-step cases
+            try:
+                self.suffix_seq_space = tokenizer0.encode(" word")
+            except Exception:
+                self.suffix_seq_space = None
+            try:
+                self.suffix_seq_nospace = tokenizer0.encode("word")
+            except Exception:
+                self.suffix_seq_nospace = None
             logger.info(
                 "BigramGuard prepare: tokenizer=found single_token_blacklist=%d word_with_space_ids=%d word_no_space_ids=%d",
                 0 if self.single_token_blacklist is None else int(self.single_token_blacklist.numel()),
@@ -189,6 +201,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     "BigramGuard: request idx=%d has empty first-token set for 'The'",
                     i,
                 )
+        # Initialize per-request FSM for suffix multi-step tracking
+        self.active_after_the = torch.zeros((len(reqs),), dtype=torch.bool, device=device)
+        self.suffix_variant_space = torch.zeros((len(reqs),), dtype=torch.bool, device=device)  # True => use space variant
+        self.suffix_progress = torch.zeros((len(reqs),), dtype=torch.int32, device=device)
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         # Track if we just emitted a first-token for "The" at a start position
@@ -205,6 +221,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             last_id = int(output_ids[i].item())
             if int(last_id) in first_ids_set:
                 self.pending_after_the_at_start[i] = True
+                self.active_after_the[i] = True
                 rid = getattr(req, "rid", None)
                 logger.info(
                     "BigramGuard: pending second-token ban set rid=%s idx=%d last_id=%d",
@@ -212,6 +229,31 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     i,
                     last_id,
                 )
+            # If already active (after seeing first token), advance FSM with current token
+            if bool(self.active_after_the[i].item()):
+                # Initialize variant and reset progress if this is the first step after 'The'
+                if bool(self.pending_after_the_at_start[i].item()):
+                    req_map = self.first_token_requires_space_per_req[i] or {}
+                    need_space_variant = bool(req_map.get(last_id, True))
+                    self.suffix_variant_space[i] = need_space_variant
+                    self.suffix_progress[i] = 0
+                else:
+                    # Advance matching on subsequent steps
+                    seq = (
+                        self.suffix_seq_space if bool(self.suffix_variant_space[i].item()) else self.suffix_seq_nospace
+                    )
+                    if seq is None or len(seq) == 0:
+                        # No canonical sequence; deactivate to avoid false blocks
+                        self.active_after_the[i] = False
+                    else:
+                        prog = int(self.suffix_progress[i].item())
+                        # Only advance if not exceeding sequence
+                        if prog < len(seq):
+                            if last_id == int(seq[prog]):
+                                self.suffix_progress[i] = prog + 1
+                            else:
+                                # diverged; deactivate
+                                self.active_after_the[i] = False
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
@@ -259,6 +301,29 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         )
                 # Reset flag after applying for this step
                 self.pending_after_the_at_start[i] = False
+
+            # Multi-step guard: if we're in active suffix matching state and are at the point
+            # where emitting the next token would complete the suffix (canonical encoding),
+            # then hard-block that specific token id.
+            if bool(self.active_after_the[i].item()):
+                seq = (
+                    self.suffix_seq_space if bool(self.suffix_variant_space[i].item()) else self.suffix_seq_nospace
+                )
+                if seq and len(seq) >= 2:
+                    prog = int(self.suffix_progress[i].item())
+                    # If we have matched first k tokens of the suffix and k == len(seq) - 1,
+                    # then the next token uniquely completes " word" or "word".
+                    if prog == len(seq) - 1:
+                        next_tid = int(seq[prog])
+                        logits[i, next_tid] = -float("inf")
+                        rid = getattr(req, "rid", None)
+                        logger.info(
+                            "BigramGuard: blocked multi-step completion rid=%s idx=%d next_tid=%d variant_space=%s",
+                            str(rid),
+                            i,
+                            next_tid,
+                            str(bool(self.suffix_variant_space[i].item())),
+                        )
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
