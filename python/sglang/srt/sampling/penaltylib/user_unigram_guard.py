@@ -223,7 +223,38 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     # Delimiters considered as start positions when last non-space char
     _SENTENCE_END_CHARS = {".", "!", "?", "\n", "…"}
-    _OPENING_QUOTES = {'"', "“", "‘", "'", "*"}
+
+    # A comprehensive set of quote-like characters. We include both opening and
+    # closing variants to be robust to tokenizer/model usage.
+    _QUOTE_CHARS = {
+        '"',
+        "'",
+        "`",
+        "“",  # U+201C Left double quotation mark
+        "”",  # U+201D Right double quotation mark
+        "„",  # U+201E Double low-9 quotation mark
+        "‟",  # U+201F Double high-reversed-9 quotation mark
+        "‘",  # U+2018 Left single quotation mark
+        "’",  # U+2019 Right single quotation mark
+        "‚",  # U+201A Single low-9 quotation mark
+        "‛",  # U+201B Single high-reversed-9 quotation mark
+        "«",  # U+00AB Left-pointing double angle quotation mark
+        "»",  # U+00BB Right-pointing double angle quotation mark
+        "‹",  # U+2039 Single left-pointing angle quotation mark
+        "›",  # U+203A Single right-pointing angle quotation mark
+        "「",  # U+300C Left corner bracket
+        "」",  # U+300D Right corner bracket
+        "『",  # U+300E Left white corner bracket
+        "』",  # U+300F Right white corner bracket
+        "〈",  # U+3008 Left angle bracket
+        "〉",  # U+3009 Right angle bracket
+        "《",  # U+300A Left double angle bracket
+        "》",  # U+300B Right double angle bracket
+    }
+
+    # Characters that should count as a start when appearing before the next token.
+    # Historically included '*', keep it for markdown/emphasis scenarios.
+    _OPENING_QUOTES = _QUOTE_CHARS | {"*"}
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
         self.orchestrator = orchestrator
@@ -309,17 +340,12 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             prefixes: List[List[int]] = []
             end_punct = [",", ".", "?", "!", ":", ";"]
             for w in words_with_variants:
-                base_surfaces = [
-                    w,
-                    f" {w}",
-                    f'"{w}',
-                    f"“{w}",
-                    f"‘{w}",
-                    f"'{w}",
-                    f" '{w}",
-                    f"*{w}",
-                    f" *{w}",
-                ]
+                # Build surfaces for plain word, space+word, and all quote-like
+                # prefixes with and without a leading space to mirror tokenizer contexts.
+                base_surfaces = [w, f" {w}"]
+                for q in self._OPENING_QUOTES:
+                    base_surfaces.append(f"{q}{w}")
+                    base_surfaces.append(f" {q}{w}")
                 surfaces = []
                 for s in base_surfaces:
                     surfaces.append(s)
