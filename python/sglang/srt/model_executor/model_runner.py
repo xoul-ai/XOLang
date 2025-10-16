@@ -1986,6 +1986,11 @@ class ModelRunner:
             # Normal mode: Put CPU-heavy tasks here. They will be overlapped with the forward pass.
             sampling_info.update_regex_vocab_mask()
         sampling_info.apply_logits_bias(logits_output.next_token_logits)
+        # Enforce hard blocks early as well to reduce timing windows
+        try:
+            sampling_info.enforce_hard_blocks(logits_output.next_token_logits)
+        except Exception:
+            pass
         # DEBUG: Log top candidates and blocked ids after apply_logits_bias
         try:
             logits = logits_output.next_token_logits
