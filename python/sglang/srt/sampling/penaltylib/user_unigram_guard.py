@@ -21,7 +21,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
     # Characters that should count as a start when appearing before the next token.
     # Historically included '*', keep it for markdown/emphasis scenarios.
-    _OPENING_QUOTES = QUOTE_CHARS
+    _OPENING_QUOTES = QUOTE_CHARS | {"*", "*'", '*"'}
 
     def __init__(self, orchestrator: BatchedPenalizerOrchestrator):
         self.orchestrator = orchestrator
@@ -158,8 +158,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 if banned_words and 0 < vocab_size <= 200000:
                     # Build set of leading chars to ignore (spaces + quotes)
                     ignore_leading = (
-                        "\u0020\n\t\r\f\v\u00A0\u2009\u202F\u3000\u1680"
-                        "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u205F\u00AD\u180E"
+                        "\u0020\n\t\r\f\v\u00a0\u2009\u202f\u3000\u1680"
+                        "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u205f\u00ad\u180e"
                     )
                     for q in self._OPENING_QUOTES:
                         ignore_leading += q
