@@ -150,18 +150,25 @@ class BatchedPenalizerOrchestrator:
         on whether `_apply` has already run on this rank.
         If a penalizer does not support compute-now, falls back to last ids.
         """
+        logger.info(f"ORCH get_hard_block_ids_now: ENTRY is_required={self.is_required}")
         if not self.is_required:
+            logger.info(f"ORCH get_hard_block_ids_now: EARLY_RETURN is_required=False")
             return None
         reqs = self.reqs()
         if not reqs:
+            logger.info(f"ORCH get_hard_block_ids_now: EARLY_RETURN no_reqs")
             return None
 
         merged: list = [None] * len(reqs)
         for pen in self.penalizers.values():
             pen_name = pen.__class__.__name__
             # Prefer compute-now
-            lst_computed = pen.get_computed_hard_block_ids()
-            logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} computed_result={lst_computed is not None} computed_len={len(lst_computed) if lst_computed else 0}")
+            try:
+                lst_computed = pen.get_computed_hard_block_ids()
+                logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} computed_result={lst_computed is not None} computed_len={len(lst_computed) if lst_computed else 0}")
+            except Exception as e:
+                logger.info(f"ORCH get_hard_block_ids_now: pen={pen_name} EXCEPTION in get_computed_hard_block_ids: {e}")
+                lst_computed = None
 
             # Check if lst has any non-None values
             has_values = False
