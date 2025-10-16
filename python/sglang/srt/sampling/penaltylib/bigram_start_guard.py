@@ -468,6 +468,12 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         out: List[Optional[torch.Tensor]] = [None] * len(reqs)
         for i, req in enumerate(reqs):
             out_ids_list = getattr(req, "output_ids", []) or []
+            rid = getattr(req, "rid", None)
+            # LOG: Always log what we see in output_ids for first request
+            if i == 0:
+                logger.info(
+                    f"BigramGuard COMPUTE_NOW_ENTRY: rid={rid} idx={i} out_ids_len={len(out_ids_list)} last_few_ids={out_ids_list[-5:] if len(out_ids_list) >= 5 else out_ids_list}"
+                )
             # BOS: block any single-token that decodes to "the word..." if we have it
             if len(out_ids_list) == 0 and self.single_token_blacklist is not None and self.single_token_blacklist.numel() > 0:
                 out[i] = self.single_token_blacklist
