@@ -494,11 +494,40 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             return
         self.generated_counts.add_(torch.ones_like(self.generated_counts))
         try:
+            reqs = self.orchestrator.reqs()
+            ids_list = output_ids.tolist()
+            counts_list = self.generated_counts.tolist()
             logger.info(
                 "[unigram_guard][step] output_ids=%s counts=%s",
-                output_ids.tolist(),
-                self.generated_counts.tolist(),
+                ids_list,
+                counts_list,
             )
+            for i, req in enumerate(reqs):
+                tok_id = int(ids_list[i]) if i < len(ids_list) else None
+                tok_str = None
+                has_bigram = (
+                    i < len(self.bigram_second_token_ids)
+                    and self.bigram_second_token_ids[i] is not None
+                    and self.bigram_second_token_ids[i].numel() > 0
+                )
+                try:
+                    tokenizer = getattr(req, "tokenizer", None)
+                    if tokenizer is not None and tok_id is not None:
+                        tok_str = tokenizer.decode([tok_id])
+                except Exception:
+                    tok_str = None
+                in_bigram = False
+                if has_bigram and tok_id is not None:
+                    in_bigram = bool(
+                        (self.bigram_second_token_ids[i] == tok_id).any().item()
+                    )
+                logger.info(
+                    "[unigram_guard][step][%d] chosen_id=%s dec=%r in_bigram_second=%s",
+                    i,
+                    tok_id,
+                    tok_str,
+                    in_bigram,
+                )
         except Exception:
             pass
 
@@ -529,12 +558,32 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     bool(self.bigram_hard[i].item()),
                     second_ids[:10].tolist(),
                 )
+                try:
+                    sample_vals = logits[i, second_ids[:10]].detach().cpu().tolist()
+                    logger.info(
+                        "[unigram_guard][apply][%d] bigram logits before: %s",
+                        i,
+                        sample_vals,
+                    )
+                except Exception:
+                    pass
                 if bool(self.bigram_hard[i].item()):
                     logits[i, second_ids] = -float("inf")
                 else:
                     bb = float(self.bigram_bias_vals[i].item())
                     if bb != 0.0:
                         logits[i, second_ids] += bb
+                try:
+                    sample_vals_after = (
+                        logits[i, second_ids[:10]].detach().cpu().tolist()
+                    )
+                    logger.info(
+                        "[unigram_guard][apply][%d] bigram logits after: %s",
+                        i,
+                        sample_vals_after,
+                    )
+                except Exception:
+                    pass
 
             first_ids = self.first_token_ids[i]
             if first_ids is None or first_ids.numel() == 0:
