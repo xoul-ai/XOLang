@@ -64,7 +64,8 @@ class BatchedPenalizerOrchestrator:
             torch.Tensor: The logits after applying the penalizers.
         """
         for penalizer in self.penalizers.values():
-            penalizer.apply(logits)
+            logits = penalizer.apply(logits)
+        return logits
 
     def filter(self, keep_indices: torch.Tensor):
         """
@@ -145,9 +146,10 @@ class _BatchedPenalizer(abc.ABC):
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if not self._is_prepared:
-            return
+            return logits
 
         self._apply(logits=logits)
+        return logits
 
     def filter(self, keep_indices: torch.Tensor):
         if not self._is_prepared:
