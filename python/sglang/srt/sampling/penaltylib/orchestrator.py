@@ -31,6 +31,19 @@ class BatchedPenalizerOrchestrator:
             is_required |= pen_is_required
         self.is_required = is_required
 
+    def __getstate__(self):
+        # For pickling: convert weakref to None since batch won't survive pickling
+        # The batch reference is only needed during initialization
+        state = self.__dict__.copy()
+        state['_batch_ref'] = None
+        return state
+
+    def __setstate__(self, state):
+        # For unpickling: restore with a dead weakref
+        self.__dict__.update(state)
+        if self._batch_ref is None:
+            self._batch_ref = lambda: None
+
     @property
     def batch(self) -> ScheduleBatch | None:
         return self._batch_ref()
@@ -43,7 +56,10 @@ class BatchedPenalizerOrchestrator:
             self._batch_ref = weakref.ref(value)
 
     def reqs(self):
-        return self.batch.reqs
+        batch = self.batch
+        if batch is None:
+            return None
+        return batch.reqs
 
     def cumulate_output_tokens(self, output_ids: torch.Tensor):
         """

@@ -317,7 +317,8 @@ class ForwardBatch:
     ):
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"FORWARD_BATCH init_new: ENTRY batch.sampling_info={batch.sampling_info is not None} orch={batch.sampling_info.penalizer_orchestrator is not None if batch.sampling_info else False}")
+        orch = batch.sampling_info.penalizer_orchestrator if batch.sampling_info else None
+        logger.info(f"FORWARD_BATCH init_new: ENTRY batch.sampling_info={batch.sampling_info is not None} orch_is_none={orch is None} orch_type={type(orch).__name__} orch_is_required={orch.is_required if orch else 'N/A'}")
 
         from sglang.srt.two_batch_overlap import TboForwardBatchPreparer
 

@@ -1717,7 +1717,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"TO_MODEL_WORKER_BATCH: BEFORE create sampling_info={self.sampling_info is not None} orch={self.sampling_info.penalizer_orchestrator is not None if self.sampling_info else False}")
+        orch_before = self.sampling_info.penalizer_orchestrator if self.sampling_info else None
+        logger.info(f"TO_MODEL_WORKER_BATCH: BEFORE create sampling_info={self.sampling_info is not None} orch_is_none={orch_before is None} orch_type={type(orch_before).__name__} orch_id={id(orch_before)}")
 
         global bid
         bid += 1
@@ -1770,7 +1771,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
             launch_done=self.launch_done,
         )
-        logger.info(f"TO_MODEL_WORKER_BATCH: AFTER create ret.sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
+        orch_after = ret.sampling_info.penalizer_orchestrator if ret.sampling_info else None
+        logger.info(f"TO_MODEL_WORKER_BATCH: AFTER create ret.sampling_info={ret.sampling_info is not None} orch_is_none={orch_after is None} orch_type={type(orch_after).__name__} orch_id={id(orch_after)} same_as_before={id(orch_after) == id(orch_before) if orch_after and orch_before else False}")
         return ret
 
     def copy(self):
