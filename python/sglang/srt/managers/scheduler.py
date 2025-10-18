@@ -1812,6 +1812,11 @@ class Scheduler(
             if self.spec_algorithm.is_none():
                 model_worker_batch = batch.get_model_worker_batch()
 
+                import logging
+                logger = logging.getLogger(__name__)
+                orch_check = model_worker_batch.sampling_info.penalizer_orchestrator if model_worker_batch.sampling_info else None
+                logger.info(f"SCHEDULER after get_model_worker_batch: sampling_info={model_worker_batch.sampling_info is not None} orch_is_none={orch_check is None} orch_id={id(orch_check)}")
+
                 if self.pp_group.is_last_rank:
                     logits_output, next_token_ids, can_run_cuda_graph = (
                         self.tp_worker.forward_batch_generation(model_worker_batch)

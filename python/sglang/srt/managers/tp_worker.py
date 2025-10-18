@@ -234,6 +234,11 @@ class TpModelWorker:
     ) -> Tuple[
         Union[LogitsProcessorOutput, torch.Tensor], Optional[torch.Tensor], bool
     ]:
+        import logging
+        logger = logging.getLogger(__name__)
+        orch_entry = model_worker_batch.sampling_info.penalizer_orchestrator if model_worker_batch.sampling_info else None
+        logger.info(f"TP_WORKER forward_batch_generation: ENTRY sampling_info={model_worker_batch.sampling_info is not None} orch_is_none={orch_entry is None} orch_id={id(orch_entry)}")
+
         # update the consumer index of hicache to the running batch
         self.set_hicache_consumer(model_worker_batch.hicache_consumer_index)
 
