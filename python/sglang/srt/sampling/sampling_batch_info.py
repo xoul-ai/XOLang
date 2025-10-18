@@ -70,6 +70,10 @@ class SamplingBatchInfo:
 
     @classmethod
     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"FROM_SCHEDULE_BATCH: ENTRY batch_size={len(batch.reqs) if batch and batch.reqs else 0}")
+
         global_server_args_dict = cls._get_global_server_args_dict()
 
         reqs = batch.reqs
@@ -138,6 +142,9 @@ class SamplingBatchInfo:
         # While we can choose not to even create the class instances if they are not required, this
         # could add additional complexity to the {ScheduleBatch} class, especially we need to
         # handle {filter_batch()} and {merge_batch()} cases as well.
+        enable_bigram = cls._get_global_server_args_dict().get("enable_bigram_start_guard_the_word", True)
+        logger.info(f"FROM_SCHEDULE_BATCH: enable_bigram_start_guard_the_word={enable_bigram}")
+
         penalizer_orchestrator = penaltylib.BatchedPenalizerOrchestrator(
             vocab_size=vocab_size,
             batch=batch,
@@ -150,10 +157,11 @@ class SamplingBatchInfo:
             }
             |
             ({penaltylib.BatchedFixedBigramStartGuardPenalizer}
-             if cls._get_global_server_args_dict().get("enable_bigram_start_guard_the_word", True)
+             if enable_bigram
              else set()),
         )
 
+        logger.info(f"FROM_SCHEDULE_BATCH: created penalizer_orchestrator={penalizer_orchestrator is not None} is_required={penalizer_orchestrator.is_required if penalizer_orchestrator else None}")
 
         ret = cls(
             temperatures=temperatures,
@@ -172,6 +180,7 @@ class SamplingBatchInfo:
             device=device,
             logit_bias=logit_bias,
         )
+        logger.info(f"FROM_SCHEDULE_BATCH: returning ret with penalizer_orchestrator={ret.penalizer_orchestrator is not None}")
         return ret
 
     def __len__(self):
