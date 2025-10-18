@@ -315,6 +315,10 @@ class ForwardBatch:
         batch: ModelWorkerBatch,
         model_runner: ModelRunner,
     ):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"FORWARD_BATCH init_new: ENTRY batch.sampling_info={batch.sampling_info is not None} orch={batch.sampling_info.penalizer_orchestrator is not None if batch.sampling_info else False}")
+
         from sglang.srt.two_batch_overlap import TboForwardBatchPreparer
 
         ret = cls(
@@ -410,6 +414,7 @@ class ForwardBatch:
             TboForwardBatchPreparer.prepare(
                 ret, is_draft_worker=model_runner.is_draft_worker
             )
+            logger.info(f"FORWARD_BATCH init_new: RETURN (idle) sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
             return ret
 
         # Override the positions with spec_info
@@ -460,6 +465,7 @@ class ForwardBatch:
             ret, is_draft_worker=model_runner.is_draft_worker
         )
 
+        logger.info(f"FORWARD_BATCH init_new: RETURN (normal) sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
         return ret
 
     def merge_mm_inputs(self) -> Optional[MultimodalInputs]:
