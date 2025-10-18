@@ -84,7 +84,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 # If tokenizer is unavailable, skip for this request
                 continue
 
-            matches = re.findall(r"[A-Za-z]+", text) if text else []
+            # Match words including contractions (e.g., "don't", "we're", "would've")
+            matches = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text) if text else []
 
             cap = 1500
             seen: Set[str] = set()
