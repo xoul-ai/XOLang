@@ -107,6 +107,10 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
+        reqs = self.orchestrator.reqs()
+        # If reqs unavailable (e.g., weakref died after pickling), skip
+        if reqs is None or len(reqs) != B:
+            return logits
         for i in range(B):
             mult = float(self.dry_multiplier[i].item())
             if mult <= 0.0:
@@ -114,7 +118,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             base = float(self.dry_base[i].item())
             allow = int(self.dry_allowed_length[i].item())
             brks = self.breakers[i]
-            req = self.orchestrator.reqs()[i]
+            req = reqs[i]
 
             # 1) Build token history (origin + output so far)
             hist = (req.origin_input_ids or []) + (req.output_ids or [])

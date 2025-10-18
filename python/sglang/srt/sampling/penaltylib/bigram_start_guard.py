@@ -261,6 +261,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         # Track if we just emitted a first-token for "The" at a start position
         reqs = self.orchestrator.reqs()
+        # If reqs unavailable (e.g., weakref died after pickling), skip
+        if reqs is None:
+            return
         if output_ids is None or output_ids.numel() == 0:
             return
         for i, req in enumerate(reqs):
