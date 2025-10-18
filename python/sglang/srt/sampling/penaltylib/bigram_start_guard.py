@@ -327,6 +327,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
         reqs = self.orchestrator.reqs()
+        # If reqs unavailable (e.g., weakref died after pickling), skip
+        if reqs is None:
+            return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
             self._last_hard_blocks[j] = None

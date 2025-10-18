@@ -220,6 +220,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
         reqs = self.orchestrator.reqs()
+        # If reqs unavailable (e.g., weakref died after pickling), skip
+        if reqs is None or len(reqs) != B:
+            return logits
         # Reset last hard-blocks
         for j in range(B):
             self._last_hard_blocks[j] = None
