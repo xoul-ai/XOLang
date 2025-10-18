@@ -142,9 +142,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 self.suffix_seq_nospace = tokenizer0.encode("word")
             except Exception:
                 self.suffix_seq_nospace = None
-            
-        else:
-        
+                    
 
         for i, r in enumerate(reqs):
             tok = getattr(r, "tokenizer", None)
