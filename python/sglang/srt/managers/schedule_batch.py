@@ -1715,9 +1715,13 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             else self.seq_lens.cpu()
         )
 
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"TO_MODEL_WORKER_BATCH: BEFORE create sampling_info={self.sampling_info is not None} orch={self.sampling_info.penalizer_orchestrator is not None if self.sampling_info else False}")
+
         global bid
         bid += 1
-        return ModelWorkerBatch(
+        ret = ModelWorkerBatch(
             bid=bid,
             forward_mode=self.forward_mode,
             input_ids=self.input_ids,
@@ -1766,6 +1770,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
             launch_done=self.launch_done,
         )
+        logger.info(f"TO_MODEL_WORKER_BATCH: AFTER create ret.sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
+        return ret
 
     def copy(self):
         # Only contain fields that will be used by process_batch_result
