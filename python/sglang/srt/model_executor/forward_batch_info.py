@@ -316,9 +316,11 @@ class ForwardBatch:
         model_runner: ModelRunner,
     ):
         import logging
+
         logger = logging.getLogger(__name__)
-        orch = batch.sampling_info.penalizer_orchestrator if batch.sampling_info else None
-        logger.info(f"FORWARD_BATCH init_new: ENTRY batch.sampling_info={batch.sampling_info is not None} orch_is_none={orch is None} orch_type={type(orch).__name__} orch_is_required={orch.is_required if orch else 'N/A'}")
+        orch = (
+            batch.sampling_info.penalizer_orchestrator if batch.sampling_info else None
+        )
 
         from sglang.srt.two_batch_overlap import TboForwardBatchPreparer
 
@@ -415,7 +417,6 @@ class ForwardBatch:
             TboForwardBatchPreparer.prepare(
                 ret, is_draft_worker=model_runner.is_draft_worker
             )
-            logger.info(f"FORWARD_BATCH init_new: RETURN (idle) sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
             return ret
 
         # Override the positions with spec_info
@@ -466,7 +467,6 @@ class ForwardBatch:
             ret, is_draft_worker=model_runner.is_draft_worker
         )
 
-        logger.info(f"FORWARD_BATCH init_new: RETURN (normal) sampling_info={ret.sampling_info is not None} orch={ret.sampling_info.penalizer_orchestrator is not None if ret.sampling_info else False}")
         return ret
 
     def merge_mm_inputs(self) -> Optional[MultimodalInputs]:
@@ -676,7 +676,6 @@ class ForwardBatch:
             )
 
     def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
-
         from sglang.srt.speculative.eagle_utils import EagleDraftInput
 
         assert self.global_num_tokens_cpu is not None
@@ -792,7 +791,6 @@ class ForwardBatch:
             )
 
     def post_forward_mlp_sync_batch(self, logits_output: LogitsProcessorOutput):
-
         self.forward_mode = getattr(self, "_original_forward_mode", self.forward_mode)
         self.batch_size = getattr(self, "_original_batch_size", self.batch_size)
         bs = self.batch_size
@@ -871,12 +869,11 @@ class ForwardBatch:
     # Called before each attention module if using chunked kv cache for prefill
     # Some of the codes are adapted from https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/mla/common.py
     def prepare_chunked_prefix_cache_info(self, device: torch.device):
-
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
-        assert isinstance(
-            self.token_to_kv_pool, MLATokenToKVPool
-        ), "Currently chunked prefix cache can only be used by Deepseek models"
+        assert isinstance(self.token_to_kv_pool, MLATokenToKVPool), (
+            "Currently chunked prefix cache can only be used by Deepseek models"
+        )
 
         if self.prefix_chunk_len is not None:
             # Chunked kv cache info already prepared by prior modules

@@ -329,13 +329,6 @@ class Sampler(nn.Module):
                 group=self.tp_sync_group,
             )
 
-        try:
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(
-                    f"SAMPLER_PICKED: next_token_ids={batch_next_token_ids.tolist()}"
-                )
-        except Exception:
-            pass
         return batch_next_token_ids
 
 
