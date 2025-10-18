@@ -215,18 +215,31 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 logger.info(f"UNIGRAM_DEBUG: req_idx={i} vocab scan exception: {e}")
 
             logger.info(f"UNIGRAM_DEBUG: req_idx={i} final first_ids count: {len(first_ids)}")
-            # Check if "don't" token is in first_ids
+            # Check ALL tokens for patterns - check for "don", "let", and sample all blocked tokens
             if tokenizer and first_ids:
                 dont_tokens = []
-                for tid in list(first_ids)[:100]:  # Check first 100 to avoid too much logging
+                let_tokens = []
+                sample_all_tokens = []
+
+                for tid in list(first_ids):  # Check ALL tokens
                     try:
                         decoded = tokenizer.decode([tid])
-                        if "don" in decoded.lower():
-                            dont_tokens.append((tid, decoded))
+                        decoded_lower = decoded.lower()
+                        if "don" in decoded_lower:
+                            dont_tokens.append((tid, repr(decoded)))
+                        if "let" in decoded_lower:
+                            let_tokens.append((tid, repr(decoded)))
+                        # Sample first 80 blocked tokens for analysis
+                        if len(sample_all_tokens) < 80:
+                            sample_all_tokens.append((tid, repr(decoded)))
                     except:
                         pass
+
                 if dont_tokens:
-                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(dont_tokens)} 'don' tokens in first_ids: {dont_tokens[:10]}")
+                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(dont_tokens)} 'don' tokens: {dont_tokens}")
+                if let_tokens:
+                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(let_tokens)} 'let' tokens: {let_tokens}")
+                logger.info(f"UNIGRAM_DEBUG: req_idx={i} sample of blocked tokens (first 80): {sample_all_tokens}")
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
