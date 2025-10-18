@@ -68,9 +68,7 @@ class Sampler(nn.Module):
                 rows = min(len(logits), 2)
                 for i in range(rows):
                     topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                    logger.info(
-                        f"SAMPLER_ENTER_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
-                    )
+
         except Exception:
             pass
 
@@ -82,18 +80,17 @@ class Sampler(nn.Module):
                     rows = min(len(logits), 2)
                     for i in range(rows):
                         topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                        logger.info(
-                            f"SAMPLER_AFTER_CUSTOM_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
-                        )
+
             except Exception:
                 pass
 
         # Optionally synchronize blocked ids across TP to avoid rank divergence
         try:
-            logger.info(
-                f"SAMPLER_ENV: SYNC_BLOCKED_IDS_ACROSS_TP={int(SYNC_BLOCKED_IDS_ACROSS_TP)} dist_init={dist.is_initialized() if hasattr(dist,'is_initialized') else 'NA'}"
-            )
-            if SYNC_BLOCKED_IDS_ACROSS_TP and dist.is_initialized() and self.tp_sync_group is not None:
+            if (
+                SYNC_BLOCKED_IDS_ACROSS_TP
+                and dist.is_initialized()
+                and self.tp_sync_group is not None
+            ):
                 hard = (
                     sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
                     if sampling_info.penalizer_orchestrator is not None
@@ -106,12 +103,18 @@ class Sampler(nn.Module):
                         if ids is not None:
                             local_max = max(local_max, int(ids.numel()))
                     # Get global max across TP ranks
-                    local_max_tensor = torch.tensor([local_max], device=logits.device, dtype=torch.int32)
-                    dist.all_reduce(local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group)
+                    local_max_tensor = torch.tensor(
+                        [local_max], device=logits.device, dtype=torch.int32
+                    )
+                    dist.all_reduce(
+                        local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group
+                    )
                     max_len = int(local_max_tensor.item())
                     if max_len > 0:
                         B = len(hard)
-                        pad = torch.full((B, max_len), -1, device=logits.device, dtype=torch.int64)
+                        pad = torch.full(
+                            (B, max_len), -1, device=logits.device, dtype=torch.int64
+                        )
                         for i, ids in enumerate(hard):
                             if ids is None or ids.numel() == 0:
                                 continue
@@ -135,25 +138,25 @@ class Sampler(nn.Module):
                         # Log a small summary regardless, to see empties
                         for bi in range(min(B, 2)):
                             ids = hard[bi]
-                            count = int(ids.numel()) if (ids is not None and hasattr(ids, 'numel')) else 0
-                            sample = ids[: min(8, ids.numel())].tolist() if count > 0 else []
-                            logger.info(
-                                f"SAMPLER_SYNC_BLOCKS: batch_idx={bi} union_blocked_count={count} sample_ids={sample}"
+                            count = (
+                                int(ids.numel())
+                                if (ids is not None and hasattr(ids, "numel"))
+                                else 0
                             )
-                else:
-                    logger.info("SAMPLER_SYNC_BLOCKS: no hard ids to union (all empty)")
+                            sample = (
+                                ids[: min(8, ids.numel())].tolist() if count > 0 else []
+                            )
+
         except Exception:
             pass
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
         try:
-            logger.info("ENFORCE_BLOCK_ENTRY: About to call enforce_hard_blocks")
             before = None
             if logger.isEnabledFor(logging.INFO):
                 # count how many rows have any hard-blocks
                 pass
             sampling_info.enforce_hard_blocks(logits)
-            logger.info("ENFORCE_BLOCK_DONE: enforce_hard_blocks completed successfully")
             if logger.isEnabledFor(logging.INFO):
                 # Log a brief summary of blocked ids (first 2 rows)
                 hard = (
@@ -169,18 +172,14 @@ class Sampler(nn.Module):
                         # report a few blocked ids and their logits
                         sample_ids = ids[: min(8, ids.numel())]
                         vals = logits[bi, sample_ids].tolist()
-                        logger.info(
-                            f"SAMPLER_REAPPLY: batch_idx={bi} blocked_count={int(ids.numel())} sample_blocked_ids={sample_ids.tolist()} sample_logits={vals}"
-                        )
+
             # Also show top10 after enforcing
             try:
                 if logger.isEnabledFor(logging.INFO):
                     rows = min(len(logits), 2)
                     for i in range(rows):
                         topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                        logger.info(
-                            f"SAMPLER_AFTER_ENFORCE_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_logits={[float(x) for x in topk.values]}"
-                        )
+
             except Exception:
                 pass
         except Exception:
@@ -211,21 +210,14 @@ class Sampler(nn.Module):
             try:
                 if logger.isEnabledFor(logging.INFO):
                     rows = min(len(logits), 2)
-                    for i in range(rows):
-                        logger.info(
-                            f"SAMPLER_TEMPERATURE_APPLIED: batch_idx={i} first3_temps={sampling_info.temperatures[:3].view(-1).tolist()}"
-                        )
+
             except Exception:
                 pass
             logits[:] = torch.softmax(logits, dim=-1)
             try:
                 if logger.isEnabledFor(logging.INFO):
                     rows = min(len(logits), 2)
-                    for i in range(rows):
-                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-                        logger.info(
-                            f"SAMPLER_AFTER_SOFTMAX_TOP10: batch_idx={i} top10_ids={topk.indices.tolist()} top10_probs={[float(x) for x in topk.values]}"
-                        )
+
             except Exception:
                 pass
             probs = logits
@@ -255,13 +247,12 @@ class Sampler(nn.Module):
                         # Log a brief summary for first 2 rows
                         for bi in range(min(len(hard), 2)):
                             ids = hard[bi]
-                            if ids is None or (hasattr(ids, "numel") and ids.numel() == 0):
+                            if ids is None or (
+                                hasattr(ids, "numel") and ids.numel() == 0
+                            ):
                                 continue
                             sample_ids = ids[: min(8, ids.numel())]
-                            vals = probs[bi, sample_ids].tolist()
-                            logger.info(
-                                f"SAMPLER_ZERO_MASK: batch_idx={bi} sample_blocked_ids={sample_ids.tolist()} sample_probs={vals}"
-                            )
+
             except Exception:
                 pass
             del logits
