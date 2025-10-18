@@ -236,17 +236,27 @@ class SamplingBatchInfo:
         This ensures any -inf masks set by unigram/bigram guards persist even if
         later transformations modified logits.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        orch_none = self.penalizer_orchestrator is None
+        is_req = self.penalizer_orchestrator.is_required if self.penalizer_orchestrator else False
+        logger.info(f"ENFORCE_HARD_BLOCKS: orch_is_none={orch_none} is_required={is_req}")
+
         if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
+            logger.info(f"ENFORCE_HARD_BLOCKS: EARLY_RETURN orch_is_none={orch_none} is_required={is_req}")
             return
         # Prefer compute-now ids to avoid overlap/timing issues
         hard = self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
+            logger.info(f"ENFORCE_HARD_BLOCKS: get_hard_block_ids_now returned empty/None")
             return
         # Apply per-row masks
         for i, ids in enumerate(hard):
             if ids is None or ids.numel() == 0:
                 continue
             logits[i, ids] = -float("inf")
+            logger.info(f"ENFORCE_HARD_BLOCKS: Applied -inf to row {i}, {ids.numel()} token IDs")
 
     def filter_batch(self, keep_indices: List[int], keep_indices_device: torch.Tensor):
         self.penalizer_orchestrator.filter(keep_indices_device)
