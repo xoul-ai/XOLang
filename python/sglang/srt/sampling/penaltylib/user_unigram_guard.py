@@ -147,14 +147,44 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         for j, tok in enumerate(ids):
                             s = tokenizer.decode([tok])
                             if re.search(r"[A-Za-z]", s):
+                                # Skip contraction fragments: tokens that are just apostrophe + short suffix
+                                # like 't, 's, 're, 'm, 'd, 'll, 've which are parts of contractions
+                                s_stripped = s.strip()
+                                # Check if it's a contraction fragment: starts with apostrophe/quote and has <=3 chars total
+                                is_contraction_fragment = (
+                                    len(s_stripped) <= 3 and
+                                    len(s_stripped) > 0 and
+                                    s_stripped[0] in ("'", '"', ''', ''', '`')
+                                )
+                                if is_contraction_fragment:
+                                    continue  # Skip this token, keep looking
                                 first_idx = j
                                 break
                         tok_id = int(ids[first_idx])
-                        first_ids.add(tok_id)
-                        prefixes.append(ids[first_idx:])
+                        # Double-check: skip if it's a contraction fragment
+                        s_check = tokenizer.decode([tok_id]).strip()
+                        is_frag = (
+                            len(s_check) <= 3 and
+                            len(s_check) > 0 and
+                            s_check[0] in ("'", '"', ''', ''', '`')
+                        )
+                        if not is_frag:
+                            first_ids.add(tok_id)
+                            prefixes.append(ids[first_idx:])
                     except Exception:
-                        first_ids.add(int(ids[0]))
-                        prefixes.append(ids)
+                        # Also check exception path
+                        try:
+                            s_check = tokenizer.decode([int(ids[0])]).strip()
+                            is_frag = (
+                                len(s_check) <= 3 and
+                                len(s_check) > 0 and
+                                s_check[0] in ("'", '"', ''', ''', '`')
+                            )
+                            if not is_frag:
+                                first_ids.add(int(ids[0]))
+                                prefixes.append(ids)
+                        except:
+                            pass
 
             # Augment watchlist by scanning vocab for single-piece tokens that
             # start with any banned word after stripping spaces/quotes.
