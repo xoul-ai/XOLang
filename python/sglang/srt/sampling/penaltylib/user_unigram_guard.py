@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional, Set
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from sglang.srt.sampling.penaltylib.orchestrator import (
     BatchedPenalizerOrchestrator,
@@ -86,6 +89,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             # Match words including contractions (e.g., "don't", "we're", "would've")
             matches = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text) if text else []
+            logger.info(f"UNIGRAM_DEBUG: req_idx={i} extracted {len(matches)} words from unigrams_text, first 20: {matches[:20]}")
 
             cap = 1500
             seen: Set[str] = set()
@@ -103,6 +107,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                             break
                 if len(seen) >= cap:
                     break
+
+            logger.info(f"UNIGRAM_DEBUG: req_idx={i} after stopword filtering, {len(words_with_variants)} word variants remain, first 30: {words_with_variants[:30]}")
 
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
@@ -159,6 +165,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     low = orig.lower()
                     if low and (low not in STOPWORDS):
                         banned_words.add(low)
+                logger.info(f"UNIGRAM_DEBUG: req_idx={i} banned_words after STOPWORDS filter ({len(banned_words)} words): {sorted(banned_words)[:30]}")
                 if banned_words and 0 < vocab_size <= 200000:
                     # Build set of leading chars to ignore (spaces + quotes + SentencePiece space)
                     ignore_leading = (
@@ -195,14 +202,31 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                                 # Word boundary check: next char (if any) is not alpha
                                 if end < len(rem) and rem[end : end + 1].isalpha():
                                     continue
+                                # Log if this is a "don" token (to catch "don't")
+                                if "don" in s.lower():
+                                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} VOCAB_SCAN adding tok_id={tok_id} decoded={repr(s)} rem={repr(rem)} matched_word={repr(wlow)}")
                                 first_ids.add(int(tok_id))
                                 added += 1
                                 break
                         if added >= add_cap:
                             break
-            except Exception:
+            except Exception as e:
                 # If augmentation fails for any reason, proceed with existing set
-                pass
+                logger.info(f"UNIGRAM_DEBUG: req_idx={i} vocab scan exception: {e}")
+
+            logger.info(f"UNIGRAM_DEBUG: req_idx={i} final first_ids count: {len(first_ids)}")
+            # Check if "don't" token is in first_ids
+            if tokenizer and first_ids:
+                dont_tokens = []
+                for tid in list(first_ids)[:100]:  # Check first 100 to avoid too much logging
+                    try:
+                        decoded = tokenizer.decode([tid])
+                        if "don" in decoded.lower():
+                            dont_tokens.append((tid, decoded))
+                    except:
+                        pass
+                if dont_tokens:
+                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(dont_tokens)} 'don' tokens in first_ids: {dont_tokens[:10]}")
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
@@ -243,15 +267,39 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
+            rid = getattr(req, "rid", None)
+            tok = getattr(req, "tokenizer", None)
             if is_bos and bool(self.hard_at_bos[i].item()):
+                # Check if "don't" is being blocked
+                dont_blocked = []
+                if tok:
+                    for tid in first_ids[:20].tolist():
+                        try:
+                            decoded = tok.decode([tid])
+                            if "don" in decoded.lower():
+                                dont_blocked.append((tid, decoded))
+                        except:
+                            pass
+                logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} HARD_BLOCK at BOS, blocking {first_ids.numel()} tokens, dont_tokens={dont_blocked}")
                 logits[i, first_ids] = -float("inf")
                 self._last_hard_blocks[i] = first_ids
             elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+                dont_blocked = []
+                if tok:
+                    for tid in first_ids[:20].tolist():
+                        try:
+                            decoded = tok.decode([tid])
+                            if "don" in decoded.lower():
+                                dont_blocked.append((tid, decoded))
+                        except:
+                            pass
+                logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} HARD_BLOCK at start position, blocking {first_ids.numel()} tokens, dont_tokens={dont_blocked}")
                 logits[i, first_ids] = -float("inf")
                 self._last_hard_blocks[i] = first_ids
             else:
                 bias = float(self.bias_vals[i].item())
                 if bias != 0.0:
+                    logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} SOFT_BIAS={bias} applied to {first_ids.numel()} tokens")
                     logits[i, first_ids] += bias
         return logits
 
