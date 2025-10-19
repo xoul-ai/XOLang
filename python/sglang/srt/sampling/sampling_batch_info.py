@@ -352,10 +352,8 @@ class SamplingBatchInfo:
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
 
         # Merge penalizer_reqs to match the merged batch
-        if self.penalizer_reqs is not None and other.penalizer_reqs is not None:
-            self.penalizer_reqs.extend(other.penalizer_reqs)
-        elif other.penalizer_reqs is not None:
-            self.penalizer_reqs = other.penalizer_reqs
+        # Create a NEW list to avoid modifying the original batch.reqs in scheduler
+        self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:
