@@ -113,7 +113,14 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         import logging
         logger = logging.getLogger(__name__)
         B, V = logits.shape
-        logger.info(f"DRY _apply: called with logits B={B}, dry_multiplier len={len(self.dry_multiplier)}")
+
+        # Copy tensor/list references at start to prevent race conditions
+        dry_multiplier = self.dry_multiplier
+        dry_base = self.dry_base
+        dry_allowed_length = self.dry_allowed_length
+        breakers = self.breakers
+
+        logger.info(f"DRY _apply: called with logits B={B}, dry_multiplier len={len(dry_multiplier)}")
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
@@ -124,18 +131,21 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         if reqs_len != B:
             logger.info(f"DRY _apply: batch size mismatch, reqs={reqs_len} vs B={B}, skipping")
             return logits
-        mult_len = len(self.dry_multiplier)
+        mult_len = len(dry_multiplier)
         if mult_len != B:
             logger.info(f"DRY _apply: tensor size mismatch, dry_multiplier={mult_len} vs B={B}, skipping")
             return logits
+        if len(breakers) != B:
+            logger.info(f"DRY _apply: list size mismatch, breakers={len(breakers)} vs B={B}, skipping")
+            return logits
         logger.info(f"DRY _apply: checks passed, processing {B} requests")
         for i in range(B):
-            mult = float(self.dry_multiplier[i].item())
+            mult = float(dry_multiplier[i].item())
             if mult <= 0.0:
                 continue
-            base = float(self.dry_base[i].item())
-            allow = int(self.dry_allowed_length[i].item())
-            brks = self.breakers[i]
+            base = float(dry_base[i].item())
+            allow = int(dry_allowed_length[i].item())
+            brks = breakers[i]
             req = reqs[i]
 
             # 1) Build token history (origin + output so far)

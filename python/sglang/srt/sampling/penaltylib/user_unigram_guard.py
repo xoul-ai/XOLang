@@ -274,6 +274,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         import logging
         logger = logging.getLogger(__name__)
         B, V = logits.shape
+
+        # Copy tensor/list references at start to prevent race conditions
+        guard_window = self.guard_window
+        hard_at_bos = self.hard_at_bos
+        hard_at_all_starts = self.hard_at_all_starts
+        bias_vals = self.bias_vals
+        generated_counts = self.generated_counts
+        first_token_ids = self.first_token_ids
+        last_hard_blocks = self._last_hard_blocks
+
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
@@ -282,25 +292,25 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if len(reqs) != B:
             logger.info(f"UnigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
             return logits
-        if len(self.guard_window) != B:
-            logger.info(f"UnigramGuard _apply: tensor size mismatch, guard_window={len(self.guard_window)} vs B={B}, skipping")
+        if len(guard_window) != B:
+            logger.info(f"UnigramGuard _apply: tensor size mismatch, guard_window={len(guard_window)} vs B={B}, skipping")
             return logits
         # Check list sizes as well (these are not tensors, so they need separate validation)
-        if len(self.first_token_ids) != B:
-            logger.info(f"UnigramGuard _apply: list size mismatch, first_token_ids={len(self.first_token_ids)} vs B={B}, skipping")
+        if len(first_token_ids) != B:
+            logger.info(f"UnigramGuard _apply: list size mismatch, first_token_ids={len(first_token_ids)} vs B={B}, skipping")
             return logits
-        if len(self._last_hard_blocks) != B:
-            logger.info(f"UnigramGuard _apply: list size mismatch, _last_hard_blocks={len(self._last_hard_blocks)} vs B={B}, skipping")
+        if len(last_hard_blocks) != B:
+            logger.info(f"UnigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping")
             return logits
         # Reset last hard-blocks
         for j in range(B):
-            self._last_hard_blocks[j] = None
+            last_hard_blocks[j] = None
         for i in range(B):
             req = reqs[i]
-            first_ids = self.first_token_ids[i]
+            first_ids = first_token_ids[i]
             if first_ids is None or first_ids.numel() == 0:
                 continue
-            if int(self.generated_counts[i].item()) >= int(self.guard_window[i].item()):
+            if int(generated_counts[i].item()) >= int(guard_window[i].item()):
                 continue
 
             # 2) Determine whether we are at a start position (BOS or after quotes/punctuation)
@@ -313,7 +323,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
             rid = getattr(req, "rid", None)
             tok = getattr(req, "tokenizer", None)
-            if is_bos and bool(self.hard_at_bos[i].item()):
+            if is_bos and bool(hard_at_bos[i].item()):
                 # Check if "don't" is being blocked
                 dont_blocked = []
                 if tok:
@@ -325,8 +335,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         except:
                             pass
                 logits[i, first_ids] = -float("inf")
-                self._last_hard_blocks[i] = first_ids
-            elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+                last_hard_blocks[i] = first_ids
+            elif (not is_bos) and bool(hard_at_all_starts[i].item()):
                 dont_blocked = []
                 if tok:
                     for tid in first_ids[:20].tolist():
@@ -337,9 +347,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         except:
                             pass
                 logits[i, first_ids] = -float("inf")
-                self._last_hard_blocks[i] = first_ids
+                last_hard_blocks[i] = first_ids
             else:
-                bias = float(self.bias_vals[i].item())
+                bias = float(bias_vals[i].item())
                 if bias != 0.0:
                     logits[i, first_ids] += bias
         return logits

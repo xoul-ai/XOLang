@@ -315,6 +315,15 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
         B = logits.shape[0]
+
+        # Copy tensor/list references at start to prevent race conditions
+        active_after_the = self.active_after_the
+        suffix_variant_space = self.suffix_variant_space
+        suffix_progress = self.suffix_progress
+        first_token_ids_set_per_req = self.first_token_ids_set_per_req
+        last_hard_blocks = self._last_hard_blocks
+        single_token_blacklist = self.single_token_blacklist
+
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
@@ -323,37 +332,37 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         if len(reqs) != B:
             logger.info(f"BigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
             return logits
-        if len(self.active_after_the) != B:
-            logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(self.active_after_the)} vs B={B}, skipping")
+        if len(active_after_the) != B:
+            logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(active_after_the)} vs B={B}, skipping")
             return logits
         # Check list sizes as well (these are not tensors, so they need separate validation)
-        if len(self.first_token_ids_set_per_req) != B:
-            logger.info(f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(self.first_token_ids_set_per_req)} vs B={B}, skipping")
+        if len(first_token_ids_set_per_req) != B:
+            logger.info(f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(first_token_ids_set_per_req)} vs B={B}, skipping")
             return logits
-        if len(self._last_hard_blocks) != B:
-            logger.info(f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(self._last_hard_blocks)} vs B={B}, skipping")
+        if len(last_hard_blocks) != B:
+            logger.info(f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping")
             return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
-            self._last_hard_blocks[j] = None
+            last_hard_blocks[j] = None
         for i, req in enumerate(reqs):
             # BOS: Hard block single-token candidates that decode to "the word..." (boundary-aware)
             out_ids_list = getattr(req, "output_ids", []) or []
             rid = getattr(req, "rid", None)
-            if len(out_ids_list) == 0 and self.single_token_blacklist is not None:
-                logits[i, self.single_token_blacklist] = -float("inf")
+            if len(out_ids_list) == 0 and single_token_blacklist is not None:
+                logits[i, single_token_blacklist] = -float("inf")
                 if (
-                    self.single_token_blacklist is not None
-                    and self.single_token_blacklist.numel() > 0
+                    single_token_blacklist is not None
+                    and single_token_blacklist.numel() > 0
                 ):
-                    self._last_hard_blocks[i] = self.single_token_blacklist
+                    last_hard_blocks[i] = single_token_blacklist
 
             tok = getattr(req, "tokenizer", None)
 
             # Two-step guard: proactively detect if we are immediately after a THE token at a start,
             # even if cumulate missed due to overlap scheduling. If so, set variant and apply masks.
             just_after_the = False
-            first_ids_set2 = self.first_token_ids_set_per_req[i]
+            first_ids_set2 = first_token_ids_set_per_req[i]
             if first_ids_set2 and out_ids_list:
                 # We consider we are at start of sentence if out_len == 1 or if start-detect on tail of decoded prefix is True
                 is_start_here = False
@@ -366,7 +375,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 if is_start_here and (last_id2 in first_ids_set2):
                     just_after_the = True
                     # Establish variant if not already set
-                    if not bool(self.active_after_the[i].item()):
+                    if not bool(active_after_the[i].item()):
                         self.active_after_the[i] = True
                         req_map2 = self.first_token_requires_space_per_req[i] or {}
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
@@ -376,7 +385,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # Two-step guard: if flagged pending or detected just-after-the, block appropriate second-token IDs
             if self.pending_after_the_at_start[i] or just_after_the:
                 # Use variant decided at cumulate time to avoid drift
-                need_space_variant = bool(self.suffix_variant_space[i].item())
+                need_space_variant = bool(suffix_variant_space[i].item())
                 if need_space_variant and self.word_with_space_ids is not None:
                     logits[i, self.word_with_space_ids] = -float("inf")
                     if (
@@ -411,14 +420,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # Multi-step guard: if we're in active suffix matching state and are at the point
             # where emitting the next token would complete the suffix (canonical encoding),
             # then hard-block that specific token id.
-            if bool(self.active_after_the[i].item()):
+            if bool(active_after_the[i].item()):
                 seq = (
                     self.suffix_seq_space
-                    if bool(self.suffix_variant_space[i].item())
+                    if bool(suffix_variant_space[i].item())
                     else self.suffix_seq_nospace
                 )
                 if seq and len(seq) >= 2:
-                    prog = int(self.suffix_progress[i].item())
+                    prog = int(suffix_progress[i].item())
                     # If we have matched first k tokens of the suffix and k == len(seq) - 1,
                     # then the next token uniquely completes " word" or "word".
                     if prog == len(seq) - 1:
