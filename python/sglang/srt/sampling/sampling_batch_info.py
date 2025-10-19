@@ -269,6 +269,10 @@ class SamplingBatchInfo:
     def filter_batch(self, keep_indices: List[int], keep_indices_device: torch.Tensor):
         self.penalizer_orchestrator.filter(keep_indices_device)
 
+        # Filter penalizer_reqs to match the filtered batch
+        if self.penalizer_reqs is not None:
+            self.penalizer_reqs = [self.penalizer_reqs[i] for i in keep_indices]
+
         if self.has_custom_logit_processor:
             self._filter_batch_custom_logit_processor(keep_indices, keep_indices_device)
 
@@ -346,6 +350,12 @@ class SamplingBatchInfo:
 
     def merge_batch(self, other: "SamplingBatchInfo"):
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
+
+        # Merge penalizer_reqs to match the merged batch
+        if self.penalizer_reqs is not None and other.penalizer_reqs is not None:
+            self.penalizer_reqs.extend(other.penalizer_reqs)
+        elif other.penalizer_reqs is not None:
+            self.penalizer_reqs = other.penalizer_reqs
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:
