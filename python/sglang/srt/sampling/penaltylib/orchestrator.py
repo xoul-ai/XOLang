@@ -29,6 +29,7 @@ class BatchedPenalizerOrchestrator:
         self.device = batch.device
         self.penalizers = {Penalizer: Penalizer(self) for Penalizer in penalizers}
         self._backup_reqs = None  # Fallback reqs list for worker thread usage
+        self._backup_reqs_len = 0  # Track length to only log changes
         self._unique_id = f"{id(self)}_{int(time.time() * 1000000)}"  # Unique ID for tracking
 
         logger.info(f"Orchestrator __init__: created new orchestrator, unique_id={self._unique_id}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
@@ -66,9 +67,6 @@ class BatchedPenalizerOrchestrator:
             self._batch_ref = weakref.ref(value)
 
     def reqs(self):
-        import logging
-        logger = logging.getLogger(__name__)
-
         # Prefer backup_reqs if it's been set (more up-to-date after merge/filter)
         if self._backup_reqs is not None:
             return self._backup_reqs
@@ -76,10 +74,11 @@ class BatchedPenalizerOrchestrator:
         # Fallback to batch.reqs if backup not set
         batch = self.batch
         if batch is not None:
-            logger.warning(f"Orchestrator reqs(): using batch.reqs (backup not set), unique_id={self._unique_id}, batch_alive={batch is not None}")
             return batch.reqs
 
         # This should NEVER happen - log it if it does
+        import logging
+        logger = logging.getLogger(__name__)
         logger.error(f"Orchestrator reqs(): returning None! backup_reqs={self._backup_reqs}, batch={batch}, unique_id={self._unique_id}")
         return None
 
@@ -90,12 +89,15 @@ class BatchedPenalizerOrchestrator:
         logger = logging.getLogger(__name__)
 
         reqs_len = len(reqs) if reqs else 0
-        # Get caller info to understand where this is being called from
-        stack = traceback.extract_stack()
-        caller = stack[-2] if len(stack) >= 2 else None
-        caller_info = f"{caller.filename}:{caller.lineno}" if caller else "unknown"
 
-        logger.info(f"Orchestrator set_backup_reqs(): unique_id={self._unique_id}, len={reqs_len}, caller={caller_info}")
+        # Only log when length changes or when it's None (critical issue)
+        if reqs_len != self._backup_reqs_len or reqs is None:
+            stack = traceback.extract_stack()
+            caller = stack[-2] if len(stack) >= 2 else None
+            caller_info = f"{caller.filename}:{caller.lineno}" if caller else "unknown"
+            logger.info(f"Orchestrator set_backup_reqs(): unique_id={self._unique_id}, len={reqs_len} (was {self._backup_reqs_len}), caller={caller_info}")
+            self._backup_reqs_len = reqs_len
+
         self._backup_reqs = reqs
 
     def cumulate_output_tokens(self, output_ids: torch.Tensor):
