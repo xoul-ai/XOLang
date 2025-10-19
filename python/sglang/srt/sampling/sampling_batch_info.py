@@ -47,6 +47,9 @@ class SamplingBatchInfo:
     penalizer_orchestrator: Optional[penaltylib.BatchedPenalizerOrchestrator] = None
     linear_penalty: torch.Tensor = None
 
+    # Store reqs list for penalizers (survives Queue pickling, unlike orchestrator's weakref)
+    penalizer_reqs: Optional[List] = None
+
     # Whether any request has custom logit processor
     has_custom_logit_processor: bool = False
     # Custom parameters
@@ -171,6 +174,7 @@ class SamplingBatchInfo:
             need_min_p_sampling=any(r.sampling_params.min_p > 0 for r in reqs),
             vocab_size=vocab_size,
             penalizer_orchestrator=penalizer_orchestrator,
+            penalizer_reqs=reqs,  # Store reqs for penalizers to use in worker thread
             has_custom_logit_processor=has_custom_logit_processor,
             custom_params=custom_params,
             custom_logit_processor=merged_custom_logit_processor,
@@ -181,6 +185,10 @@ class SamplingBatchInfo:
 
     def __len__(self):
         return len(self.temperatures)
+
+    def get_penalizer_reqs(self):
+        """Get the reqs list for penalizers (safe for worker thread usage)."""
+        return self.penalizer_reqs
 
     def update_regex_vocab_mask(self):
         if not self.grammars:
@@ -226,6 +234,8 @@ class SamplingBatchInfo:
             logits.add_(self.linear_penalty)
 
         if self.penalizer_orchestrator and self.penalizer_orchestrator.is_required:
+            # Set backup reqs for worker thread usage (weakref may be dead after pickling)
+            self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
             self.penalizer_orchestrator.apply(logits)
 
@@ -244,11 +254,11 @@ class SamplingBatchInfo:
         import logging
         logger = logging.getLogger(__name__)
 
-        orch_none = self.penalizer_orchestrator is None
-        is_req = self.penalizer_orchestrator.is_required if self.penalizer_orchestrator else False
-
         if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
             return
+
+        # Set backup reqs for worker thread usage (weakref may be dead after pickling)
+        self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
         # Prefer compute-now ids to avoid overlap/timing issues
         hard = self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
