@@ -326,6 +326,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         if len(self.active_after_the) != B:
             logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(self.active_after_the)} vs B={B}, skipping")
             return logits
+        # Check list sizes as well (these are not tensors, so they need separate validation)
+        if len(self.first_token_ids_set_per_req) != B:
+            logger.info(f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(self.first_token_ids_set_per_req)} vs B={B}, skipping")
+            return logits
+        if len(self._last_hard_blocks) != B:
+            logger.info(f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(self._last_hard_blocks)} vs B={B}, skipping")
+            return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
             self._last_hard_blocks[j] = None

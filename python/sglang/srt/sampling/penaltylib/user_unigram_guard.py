@@ -285,6 +285,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if len(self.guard_window) != B:
             logger.info(f"UnigramGuard _apply: tensor size mismatch, guard_window={len(self.guard_window)} vs B={B}, skipping")
             return logits
+        # Check list sizes as well (these are not tensors, so they need separate validation)
+        if len(self.first_token_ids) != B:
+            logger.info(f"UnigramGuard _apply: list size mismatch, first_token_ids={len(self.first_token_ids)} vs B={B}, skipping")
+            return logits
+        if len(self._last_hard_blocks) != B:
+            logger.info(f"UnigramGuard _apply: list size mismatch, _last_hard_blocks={len(self._last_hard_blocks)} vs B={B}, skipping")
+            return logits
         # Reset last hard-blocks
         for j in range(B):
             self._last_hard_blocks[j] = None

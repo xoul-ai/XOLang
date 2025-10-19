@@ -235,6 +235,12 @@ class SamplingBatchInfo:
 
         if self.penalizer_orchestrator and self.penalizer_orchestrator.is_required:
             # Set backup reqs for worker thread usage (weakref may be dead after pickling)
+            import logging
+            logger = logging.getLogger(__name__)
+            B = logits.shape[0]
+            reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
+            if reqs_len != B:
+                logger.info(f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}")
             self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
             self.penalizer_orchestrator.apply(logits)
@@ -349,11 +355,18 @@ class SamplingBatchInfo:
         return merged_dict
 
     def merge_batch(self, other: "SamplingBatchInfo"):
+        import logging
+        logger = logging.getLogger(__name__)
+
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
 
         # Merge penalizer_reqs to match the merged batch
         # Create a NEW list to avoid modifying the original batch.reqs in scheduler
+        old_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
+        other_len = len(other.penalizer_reqs) if other.penalizer_reqs else 0
         self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
+        new_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
+        logger.info(f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}")
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:
