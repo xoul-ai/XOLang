@@ -370,26 +370,25 @@ class SamplingBatchInfo:
 
         logger = logging.getLogger(__name__)
 
-        # Merge penalizer_reqs FIRST to match the merged batch
+        logger.info(
+            f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}"
+        )
+        self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
+
+        # Merge penalizer_reqs to match the merged batch
         # Create a NEW list to avoid modifying the original batch.reqs in scheduler
         old_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
         other_len = len(other.penalizer_reqs) if other.penalizer_reqs else 0
         self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
         new_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
         logger.info(
-            f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}"
+            f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}, orch_id={id(self.penalizer_orchestrator)}"
         )
 
-        # CRITICAL: Update orchestrator's _backup_reqs BEFORE calling merge
-        # This ensures penalizers can access correct reqs during their _prepare() calls inside merge
+        # CRITICAL: Update orchestrator's _backup_reqs immediately after merge to keep in sync
+        # This ensures workers can access correct reqs after pickling (when batch weakref is dead)
         self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
-        logger.info(f"merge_batch: updated backup_reqs to size {new_len} BEFORE orchestrator merge")
-
-        # Now merge orchestrators - penalizers will see correct reqs during prepare
-        logger.info(
-            f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}"
-        )
-        self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
+        logger.info(f"merge_batch: updated backup_reqs to size {new_len}")
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:
