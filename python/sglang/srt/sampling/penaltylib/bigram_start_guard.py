@@ -353,14 +353,37 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 f"BigramGuard _apply: reqs is None! orch_unique_id={orch_unique_id}, backup_reqs={self.orchestrator._backup_reqs}, batch_ref_alive={self.orchestrator.batch is not None}"
             )
             return logits
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
+
         if len(reqs) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: reqs size mismatch, len(reqs)={len(reqs)} vs B={B}")
             return logits
+        # Check ALL tensor sizes match batch size B
         if len(active_after_the) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: active_after_the size mismatch, len={len(active_after_the)} vs B={B}")
+            return logits
+        if len(pending_after_the_at_start) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: pending_after_the_at_start size mismatch, len={len(pending_after_the_at_start)} vs B={B}")
+            return logits
+        if len(suffix_variant_space) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: suffix_variant_space size mismatch, len={len(suffix_variant_space)} vs B={B}")
+            return logits
+        if len(suffix_progress) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: suffix_progress size mismatch, len={len(suffix_progress)} vs B={B}")
             return logits
         # Check list sizes as well (these are not tensors, so they need separate validation)
         if len(first_token_ids_set_per_req) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: first_token_ids_set_per_req size mismatch, len={len(first_token_ids_set_per_req)} vs B={B}")
             return logits
         if len(last_hard_blocks) != B:
+            if DEBUG:
+                logger.warning(f"BigramGuard _apply: last_hard_blocks size mismatch, len={len(last_hard_blocks)} vs B={B}")
             return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
