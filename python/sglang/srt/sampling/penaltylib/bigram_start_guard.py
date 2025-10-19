@@ -250,11 +250,16 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         # Track if we just emitted a first-token for "The" at a start position
+        if output_ids is None or output_ids.numel() == 0:
+            return
         reqs = self.orchestrator.reqs()
         # If reqs unavailable (e.g., weakref died after pickling), skip
         if reqs is None:
+            logger.info("BigramGuard _cumulate: reqs is None, skipping")
             return
-        if output_ids is None or output_ids.numel() == 0:
+        # Check for batch size mismatch (can happen during filter/merge)
+        if len(reqs) != len(self.active_after_the):
+            logger.info(f"BigramGuard _cumulate: batch size mismatch, reqs={len(reqs)} vs active_after_the={len(self.active_after_the)}, skipping")
             return
         for i, req in enumerate(reqs):
             tok = getattr(req, "tokenizer", None)
@@ -309,9 +314,17 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         # BOS single-token hard block and two-step bigram guard
+        B = logits.shape[0]
         reqs = self.orchestrator.reqs()
-        # If reqs unavailable (e.g., weakref died after pickling), skip
+        # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
+            logger.info("BigramGuard _apply: reqs is None, skipping")
+            return logits
+        if len(reqs) != B:
+            logger.info(f"BigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
+            return logits
+        if len(self.active_after_the) != B:
+            logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(self.active_after_the)} vs B={B}, skipping")
             return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):

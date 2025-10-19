@@ -271,10 +271,19 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.generated_counts.add_(torch.ones_like(self.generated_counts))
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
+        import logging
+        logger = logging.getLogger(__name__)
         B, V = logits.shape
         reqs = self.orchestrator.reqs()
-        # If reqs unavailable (e.g., weakref died after pickling), skip
-        if reqs is None or len(reqs) != B:
+        # If reqs unavailable or batch size mismatch, skip
+        if reqs is None:
+            logger.info("UnigramGuard _apply: reqs is None, skipping")
+            return logits
+        if len(reqs) != B:
+            logger.info(f"UnigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
+            return logits
+        if len(self.guard_window) != B:
+            logger.info(f"UnigramGuard _apply: tensor size mismatch, guard_window={len(self.guard_window)} vs B={B}, skipping")
             return logits
         # Reset last hard-blocks
         for j in range(B):

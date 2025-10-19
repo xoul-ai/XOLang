@@ -106,10 +106,19 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         return
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
+        import logging
+        logger = logging.getLogger(__name__)
         B, V = logits.shape
         reqs = self.orchestrator.reqs()
-        # If reqs unavailable (e.g., weakref died after pickling), skip
-        if reqs is None or len(reqs) != B:
+        # If reqs unavailable or batch size mismatch, skip
+        if reqs is None:
+            logger.info("DRY _apply: reqs is None, skipping")
+            return logits
+        if len(reqs) != B:
+            logger.info(f"DRY _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
+            return logits
+        if len(self.dry_multiplier) != B:
+            logger.info(f"DRY _apply: tensor size mismatch, dry_multiplier={len(self.dry_multiplier)} vs B={B}, skipping")
             return logits
         for i in range(B):
             mult = float(self.dry_multiplier[i].item())
