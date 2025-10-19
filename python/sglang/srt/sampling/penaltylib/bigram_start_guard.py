@@ -355,6 +355,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # BOS: Hard block single-token candidates that decode to "the word..." (boundary-aware)
             out_ids_list = getattr(req, "output_ids", []) or []
             rid = getattr(req, "rid", None)
+            tok = getattr(req, "tokenizer", None)
+
             if len(out_ids_list) == 0 and single_token_blacklist is not None:
                 logits[i, single_token_blacklist] = -float("inf")
                 if (
@@ -362,8 +364,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     and single_token_blacklist.numel() > 0
                 ):
                     last_hard_blocks[i] = single_token_blacklist
-
-            tok = getattr(req, "tokenizer", None)
+                    logger.info(f"BigramGuard APPLY: rid={rid} BOS blocking {len(single_token_blacklist)} single-token 'the word' candidates")
 
             # Two-step guard: proactively detect if we are immediately after a THE token at a start,
             # even if cumulate missed due to overlap scheduling. If so, set variant and apply masks.
@@ -380,6 +381,12 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 last_id2 = int(out_ids_list[-1])
                 if is_start_here and (last_id2 in first_ids_set2):
                     just_after_the = True
+                    decoded_last = ""
+                    if tok:
+                        try:
+                            decoded_last = tok.decode([last_id2])
+                        except:
+                            pass
                     # Establish variant if not already set
                     if not bool(active_after_the[i].item()):
                         self.active_after_the[i] = True
@@ -387,6 +394,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
                         self.suffix_variant_space[i] = need_space_variant2
                         self.suffix_progress[i] = 0
+                        logger.info(f"BigramGuard APPLY: rid={rid} detected 'The' at start (proactive), last_token='{decoded_last}', needs_space={need_space_variant2}")
 
             # Two-step guard: if flagged pending or detected just-after-the, block appropriate second-token IDs
             if pending_after_the_at_start[i] or just_after_the:
@@ -399,20 +407,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         and word_with_space_ids.numel() > 0
                     ):
                         last_hard_blocks[i] = word_with_space_ids
-
-                    # LOG: Verify blocking worked by checking specific logit values
-                    blocked_vals = logits[i, word_with_space_ids].tolist()
-
-                    # LOG: Show top candidates after blocking
-                    top_k = torch.topk(logits[i], k=10)
-                    top_ids = top_k.indices.tolist()
-                    top_vals = top_k.values.tolist()
-                    if tok is not None:
-                        try:
-                            top_decoded = [tok.decode([tid]) for tid in top_ids]
-
-                        except Exception:
-                            pass
+                        logger.info(f"BigramGuard APPLY: rid={rid} blocking {len(word_with_space_ids)} ' word' tokens (with space), pending={bool(pending_after_the_at_start[i])}, just_after={just_after_the}")
                 elif (not need_space_variant) and word_no_space_ids is not None:
                     logits[i, word_no_space_ids] = -float("inf")
                     if (
@@ -420,6 +415,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         and word_no_space_ids.numel() > 0
                     ):
                         last_hard_blocks[i] = word_no_space_ids
+                        logger.info(f"BigramGuard APPLY: rid={rid} blocking {len(word_no_space_ids)} 'word' tokens (no space), pending={bool(pending_after_the_at_start[i])}, just_after={just_after_the}")
 
                 # Do not reset pending flag here; allow sampler compute-now to observe it reliably
 
@@ -555,9 +551,6 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         ]
 
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
-        old_len = len(self.active_after_the)
-        their_len = len(their.active_after_the)
-
         self.pending_after_the_at_start = torch.cat(
             [self.pending_after_the_at_start, their.pending_after_the_at_start], dim=0
         )
@@ -578,8 +571,6 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         )
         self._last_hard_blocks.extend(their._last_hard_blocks)
 
-        new_len = len(self.active_after_the)
-        logger.info(f"BigramGuard _merge: merged tensors {old_len} + {their_len} = {new_len}")
         # Global sets should be equivalent; prefer keeping ours if both exist
         if self.single_token_blacklist is None:
             self.single_token_blacklist = their.single_token_blacklist

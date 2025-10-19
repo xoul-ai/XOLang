@@ -271,8 +271,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.generated_counts.add_(torch.ones_like(self.generated_counts))
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
-        import logging
-        logger = logging.getLogger(__name__)
         B, V = logits.shape
 
         # Copy tensor/list references at start to prevent race conditions
@@ -286,21 +284,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
-        if reqs is None:
-            logger.info("UnigramGuard _apply: reqs is None, skipping")
-            return logits
-        if len(reqs) != B:
-            logger.info(f"UnigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
-            return logits
-        if len(guard_window) != B:
-            logger.info(f"UnigramGuard _apply: tensor size mismatch, guard_window={len(guard_window)} vs B={B}, skipping")
-            return logits
-        # Check list sizes as well (these are not tensors, so they need separate validation)
-        if len(first_token_ids) != B:
-            logger.info(f"UnigramGuard _apply: list size mismatch, first_token_ids={len(first_token_ids)} vs B={B}, skipping")
-            return logits
-        if len(last_hard_blocks) != B:
-            logger.info(f"UnigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping")
+        if reqs is None or len(reqs) != B or len(guard_window) != B or len(first_token_ids) != B or len(last_hard_blocks) != B:
             return logits
         # Reset last hard-blocks
         for j in range(B):
@@ -321,31 +305,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
-            rid = getattr(req, "rid", None)
-            tok = getattr(req, "tokenizer", None)
             if is_bos and bool(hard_at_bos[i].item()):
-                # Check if "don't" is being blocked
-                dont_blocked = []
-                if tok:
-                    for tid in first_ids[:20].tolist():
-                        try:
-                            decoded = tok.decode([tid])
-                            if "don" in decoded.lower():
-                                dont_blocked.append((tid, decoded))
-                        except:
-                            pass
                 logits[i, first_ids] = -float("inf")
                 last_hard_blocks[i] = first_ids
             elif (not is_bos) and bool(hard_at_all_starts[i].item()):
-                dont_blocked = []
-                if tok:
-                    for tid in first_ids[:20].tolist():
-                        try:
-                            decoded = tok.decode([tid])
-                            if "don" in decoded.lower():
-                                dont_blocked.append((tid, decoded))
-                        except:
-                            pass
                 logits[i, first_ids] = -float("inf")
                 last_hard_blocks[i] = first_ids
             else:
@@ -366,11 +329,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
-        import logging
-        logger = logging.getLogger(__name__)
-        old_len = len(self.guard_window)
-        their_len = len(their.guard_window)
-
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
         self.hard_at_bos = torch.cat([self.hard_at_bos, their.hard_at_bos], dim=0)
         self.hard_at_all_starts = torch.cat(
@@ -383,9 +341,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_ids.extend(their.first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
         self._last_hard_blocks.extend(their._last_hard_blocks)
-
-        new_len = len(self.guard_window)
-        logger.info(f"UnigramGuard _merge: merged tensors {old_len} + {their_len} = {new_len}")
 
     def _is_start_position(self, req) -> bool:
         _out_ids = getattr(req, "output_ids", None) or []
