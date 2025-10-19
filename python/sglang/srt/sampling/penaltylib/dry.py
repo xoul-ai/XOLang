@@ -116,7 +116,9 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
 
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
-        if reqs is None or len(reqs) != B or len(dry_multiplier) != B or len(breakers) != B:
+        if (reqs is None or len(reqs) != B or
+            len(dry_multiplier) != B or len(dry_base) != B or
+            len(dry_allowed_length) != B or len(breakers) != B):
             return logits
         for i in range(B):
             mult = float(dry_multiplier[i].item())

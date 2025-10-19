@@ -284,7 +284,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
-        if reqs is None or len(reqs) != B or len(guard_window) != B or len(first_token_ids) != B or len(last_hard_blocks) != B:
+        if (reqs is None or len(reqs) != B or
+            len(guard_window) != B or len(hard_at_bos) != B or
+            len(hard_at_all_starts) != B or len(bias_vals) != B or
+            len(generated_counts) != B or len(first_token_ids) != B or
+            len(last_hard_blocks) != B):
             return logits
         # Reset last hard-blocks
         for j in range(B):
