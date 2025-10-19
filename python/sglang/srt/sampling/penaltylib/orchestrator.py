@@ -21,6 +21,7 @@ class BatchedPenalizerOrchestrator:
         penalizers: Set[Type["_BatchedPenalizer"]],
     ):
         import logging
+        import time
         logger = logging.getLogger(__name__)
 
         self.vocab_size = vocab_size
@@ -28,8 +29,9 @@ class BatchedPenalizerOrchestrator:
         self.device = batch.device
         self.penalizers = {Penalizer: Penalizer(self) for Penalizer in penalizers}
         self._backup_reqs = None  # Fallback reqs list for worker thread usage
+        self._unique_id = f"{id(self)}_{int(time.time() * 1000000)}"  # Unique ID for tracking
 
-        logger.info(f"Orchestrator __init__: created new orchestrator, self_id={id(self)}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
+        logger.info(f"Orchestrator __init__: created new orchestrator, unique_id={self._unique_id}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
 
         is_required = False
         for penalizer in self.penalizers.values():
@@ -37,7 +39,7 @@ class BatchedPenalizerOrchestrator:
             is_required |= pen_is_required
         self.is_required = is_required
 
-        logger.info(f"Orchestrator __init__: initialized, self_id={id(self)}, is_required={is_required}")
+        logger.info(f"Orchestrator __init__: initialized, unique_id={self._unique_id}, is_required={is_required}")
 
     def __getstate__(self):
         # For pickling: convert weakref to None since batch won't survive pickling
@@ -69,25 +71,31 @@ class BatchedPenalizerOrchestrator:
 
         # Prefer backup_reqs if it's been set (more up-to-date after merge/filter)
         if self._backup_reqs is not None:
-            logger.info(f"Orchestrator reqs(): returning backup_reqs (len={len(self._backup_reqs)}), self_id={id(self)}")
             return self._backup_reqs
 
         # Fallback to batch.reqs if backup not set
         batch = self.batch
         if batch is not None:
-            logger.info(f"Orchestrator reqs(): returning batch.reqs (len={len(batch.reqs) if batch.reqs else 0}), self_id={id(self)}")
+            logger.warning(f"Orchestrator reqs(): using batch.reqs (backup not set), unique_id={self._unique_id}, batch_alive={batch is not None}")
             return batch.reqs
 
-        logger.warning(f"Orchestrator reqs(): returning None! backup_reqs is None and batch is None, self_id={id(self)}")
+        # This should NEVER happen - log it if it does
+        logger.error(f"Orchestrator reqs(): returning None! backup_reqs={self._backup_reqs}, batch={batch}, unique_id={self._unique_id}")
         return None
 
     def set_backup_reqs(self, reqs):
         """Set fallback reqs list for worker thread usage (when weakref is dead)."""
         import logging
+        import traceback
         logger = logging.getLogger(__name__)
 
         reqs_len = len(reqs) if reqs else 0
-        logger.info(f"Orchestrator set_backup_reqs(): setting backup_reqs (len={reqs_len}), self_id={id(self)}")
+        # Get caller info to understand where this is being called from
+        stack = traceback.extract_stack()
+        caller = stack[-2] if len(stack) >= 2 else None
+        caller_info = f"{caller.filename}:{caller.lineno}" if caller else "unknown"
+
+        logger.info(f"Orchestrator set_backup_reqs(): unique_id={self._unique_id}, len={reqs_len}, caller={caller_info}")
         self._backup_reqs = reqs
 
     def cumulate_output_tokens(self, output_ids: torch.Tensor):
