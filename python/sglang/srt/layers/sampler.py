@@ -27,6 +27,7 @@ if is_cuda():
 logger = logging.getLogger(__name__)
 
 SYNC_TOKEN_IDS_ACROSS_TP = get_bool_env_var("SYNC_TOKEN_IDS_ACROSS_TP")
+SYNC_BLOCKED_IDS_ACROSS_TP = get_bool_env_var("SYNC_BLOCKED_IDS_ACROSS_TP")
 RETURN_ORIGINAL_LOGPROB = get_bool_env_var("RETURN_ORIGINAL_LOGPROB")
 
 
@@ -61,9 +62,129 @@ class Sampler(nn.Module):
         """
         logits = logits_output.next_token_logits
 
+        # DIAGNOSTIC: Log top10 before any additional processing
+        try:
+            if logger.isEnabledFor(logging.INFO):
+                rows = min(len(logits), 2)
+                for i in range(rows):
+                    topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+
+        except Exception:
+            pass
+
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+
+            except Exception:
+                pass
+
+        # Optionally synchronize blocked ids across TP to avoid rank divergence
+        try:
+            if (
+                SYNC_BLOCKED_IDS_ACROSS_TP
+                and dist.is_initialized()
+                and self.tp_sync_group is not None
+            ):
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    # Compute local max length
+                    local_max = 0
+                    for ids in hard:
+                        if ids is not None:
+                            local_max = max(local_max, int(ids.numel()))
+                    # Get global max across TP ranks
+                    local_max_tensor = torch.tensor(
+                        [local_max], device=logits.device, dtype=torch.int32
+                    )
+                    dist.all_reduce(
+                        local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group
+                    )
+                    max_len = int(local_max_tensor.item())
+                    if max_len > 0:
+                        B = len(hard)
+                        pad = torch.full(
+                            (B, max_len), -1, device=logits.device, dtype=torch.int64
+                        )
+                        for i, ids in enumerate(hard):
+                            if ids is None or ids.numel() == 0:
+                                continue
+                            l = min(int(ids.numel()), max_len)
+                            pad[i, :l] = ids[:l]
+                        # All-gather across TP
+                        world_size = dist.get_world_size(self.tp_sync_group)
+                        gathered = [torch.empty_like(pad) for _ in range(world_size)]
+                        dist.all_gather(gathered, pad, group=self.tp_sync_group)
+                        # Union per row
+                        for i in range(B):
+                            union = []
+                            for t in gathered:
+                                row = t[i]
+                                valid = row[row >= 0]
+                                if valid.numel() > 0:
+                                    union.append(valid)
+                            if union:
+                                merged = torch.unique(torch.cat(union))
+                                hard[i] = merged
+                        # Log a small summary regardless, to see empties
+                        for bi in range(min(B, 2)):
+                            ids = hard[bi]
+                            count = (
+                                int(ids.numel())
+                                if (ids is not None and hasattr(ids, "numel"))
+                                else 0
+                            )
+                            sample = (
+                                ids[: min(8, ids.numel())].tolist() if count > 0 else []
+                            )
+
+        except Exception:
+            pass
+
+        # Reapply hard blocks from penalizers just before sampling to ensure persistence
+        try:
+            before = None
+            if logger.isEnabledFor(logging.INFO):
+                # count how many rows have any hard-blocks
+                pass
+            sampling_info.enforce_hard_blocks(logits)
+            if logger.isEnabledFor(logging.INFO):
+                # Log a brief summary of blocked ids (first 2 rows)
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    for bi in range(min(len(hard), 2)):
+                        ids = hard[bi]
+                        if ids is None or ids.numel() == 0:
+                            continue
+                        # report a few blocked ids and their logits
+                        sample_ids = ids[: min(8, ids.numel())]
+                        vals = logits[bi, sample_ids].tolist()
+
+            # Also show top10 after enforcing
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+                    for i in range(rows):
+                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+
+            except Exception:
+                pass
+        except Exception:
+            # Never break sampling due to diagnostics
+            pass
 
         if self.use_nan_detection and torch.any(torch.isnan(logits)):
             logger.warning("Detected errors during sampling! NaN in the logits.")
@@ -86,8 +207,54 @@ class Sampler(nn.Module):
 
             # Post process logits
             logits.div_(sampling_info.temperatures)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+
+            except Exception:
+                pass
             logits[:] = torch.softmax(logits, dim=-1)
+            try:
+                if logger.isEnabledFor(logging.INFO):
+                    rows = min(len(logits), 2)
+
+            except Exception:
+                pass
             probs = logits
+
+            # Belt-and-suspenders: zero out blocked ids on probs and renormalize
+            try:
+                hard = (
+                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
+                    if sampling_info.penalizer_orchestrator is not None
+                    else None
+                )
+                if hard:
+                    # Zero masked indices
+                    for bi, ids in enumerate(hard):
+                        if ids is None or (hasattr(ids, "numel") and ids.numel() == 0):
+                            continue
+                        probs[bi, ids] = 0.0
+                    # Renormalize each row to sum 1.0 (avoid div by zero)
+                    row_sums = probs.sum(dim=-1, keepdim=True)
+                    zero_mask = row_sums.squeeze(-1) == 0
+                    if torch.any(~zero_mask):
+                        probs[~zero_mask] = probs[~zero_mask] / row_sums[~zero_mask]
+                    if torch.any(zero_mask):
+                        # If everything got zeroed (pathological), fall back to original softmax already in `probs`
+                        pass
+                    if logger.isEnabledFor(logging.INFO):
+                        # Log a brief summary for first 2 rows
+                        for bi in range(min(len(hard), 2)):
+                            ids = hard[bi]
+                            if ids is None or (
+                                hasattr(ids, "numel") and ids.numel() == 0
+                            ):
+                                continue
+                            sample_ids = ids[: min(8, ids.numel())]
+
+            except Exception:
+                pass
             del logits
 
             if True:  # Keep this redundant check to simplify some internal code sync

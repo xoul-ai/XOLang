@@ -47,9 +47,6 @@ class SamplingBatchInfo:
     penalizer_orchestrator: Optional[penaltylib.BatchedPenalizerOrchestrator] = None
     linear_penalty: torch.Tensor = None
 
-    # Store reqs list for penalizers (survives Queue pickling, unlike orchestrator's weakref)
-    penalizer_reqs: Optional[List] = None
-
     # Whether any request has custom logit processor
     has_custom_logit_processor: bool = False
     # Custom parameters
@@ -74,8 +71,8 @@ class SamplingBatchInfo:
     @classmethod
     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
         import logging
-
         logger = logging.getLogger(__name__)
+        logger.info(f"FROM_SCHEDULE_BATCH: ENTRY batch_size={len(batch.reqs) if batch and batch.reqs else 0}")
 
         global_server_args_dict = cls._get_global_server_args_dict()
 
@@ -145,9 +142,8 @@ class SamplingBatchInfo:
         # While we can choose not to even create the class instances if they are not required, this
         # could add additional complexity to the {ScheduleBatch} class, especially we need to
         # handle {filter_batch()} and {merge_batch()} cases as well.
-        enable_bigram = cls._get_global_server_args_dict().get(
-            "enable_bigram_start_guard_the_word", True
-        )
+        enable_bigram = cls._get_global_server_args_dict().get("enable_bigram_start_guard_the_word", True)
+        logger.info(f"FROM_SCHEDULE_BATCH: enable_bigram_start_guard_the_word={enable_bigram}")
 
         penalizer_orchestrator = penaltylib.BatchedPenalizerOrchestrator(
             vocab_size=vocab_size,
@@ -159,12 +155,13 @@ class SamplingBatchInfo:
                 penaltylib.BatchedDRYPenalizer,
                 penaltylib.BatchedUserUnigramStartGuardPenalizer,
             }
-            | (
-                {penaltylib.BatchedFixedBigramStartGuardPenalizer}
-                if enable_bigram
-                else set()
-            ),
+            |
+            ({penaltylib.BatchedFixedBigramStartGuardPenalizer}
+             if enable_bigram
+             else set()),
         )
+
+        logger.info(f"FROM_SCHEDULE_BATCH: created penalizer_orchestrator={penalizer_orchestrator is not None} is_required={penalizer_orchestrator.is_required if penalizer_orchestrator else None}")
 
         ret = cls(
             temperatures=temperatures,
@@ -177,21 +174,17 @@ class SamplingBatchInfo:
             need_min_p_sampling=any(r.sampling_params.min_p > 0 for r in reqs),
             vocab_size=vocab_size,
             penalizer_orchestrator=penalizer_orchestrator,
-            penalizer_reqs=reqs,  # Store reqs for penalizers to use in worker thread
             has_custom_logit_processor=has_custom_logit_processor,
             custom_params=custom_params,
             custom_logit_processor=merged_custom_logit_processor,
             device=device,
             logit_bias=logit_bias,
         )
+        logger.info(f"FROM_SCHEDULE_BATCH: returning ret with penalizer_orchestrator={ret.penalizer_orchestrator is not None}")
         return ret
 
     def __len__(self):
         return len(self.temperatures)
-
-    def get_penalizer_reqs(self):
-        """Get the reqs list for penalizers (safe for worker thread usage)."""
-        return self.penalizer_reqs
 
     def update_regex_vocab_mask(self):
         if not self.grammars:
@@ -237,17 +230,6 @@ class SamplingBatchInfo:
             logits.add_(self.linear_penalty)
 
         if self.penalizer_orchestrator and self.penalizer_orchestrator.is_required:
-            # Set backup reqs for worker thread usage (weakref may be dead after pickling)
-            import logging
-
-            logger = logging.getLogger(__name__)
-            B = logits.shape[0]
-            reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-            if reqs_len != B:
-                logger.info(
-                    f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}, orch_id={id(self.penalizer_orchestrator)}"
-                )
-            self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
             self.penalizer_orchestrator.apply(logits)
 
@@ -263,32 +245,30 @@ class SamplingBatchInfo:
         This ensures any -inf masks set by unigram/bigram guards persist even if
         later transformations modified logits.
         """
-        if (
-            self.penalizer_orchestrator is None
-            or not self.penalizer_orchestrator.is_required
-        ):
-            return
+        import logging
+        logger = logging.getLogger(__name__)
 
-        # Set backup reqs for worker thread usage (weakref may be dead after pickling)
-        self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
+        orch_none = self.penalizer_orchestrator is None
+        is_req = self.penalizer_orchestrator.is_required if self.penalizer_orchestrator else False
+        logger.info(f"ENFORCE_HARD_BLOCKS: orch_is_none={orch_none} is_required={is_req}")
+
+        if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
+            logger.info(f"ENFORCE_HARD_BLOCKS: EARLY_RETURN orch_is_none={orch_none} is_required={is_req}")
+            return
         # Prefer compute-now ids to avoid overlap/timing issues
         hard = self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
+            logger.info(f"ENFORCE_HARD_BLOCKS: get_hard_block_ids_now returned empty/None")
             return
         # Apply per-row masks
         for i, ids in enumerate(hard):
             if ids is None or ids.numel() == 0:
                 continue
             logits[i, ids] = -float("inf")
+            logger.info(f"ENFORCE_HARD_BLOCKS: Applied -inf to row {i}, {ids.numel()} token IDs")
 
     def filter_batch(self, keep_indices: List[int], keep_indices_device: torch.Tensor):
         self.penalizer_orchestrator.filter(keep_indices_device)
-
-        # Filter penalizer_reqs to match the filtered batch
-        if self.penalizer_reqs is not None:
-            self.penalizer_reqs = [self.penalizer_reqs[i] for i in keep_indices]
-            # CRITICAL: Update orchestrator's _backup_reqs immediately after filter to keep in sync
-            self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
 
         if self.has_custom_logit_processor:
             self._filter_batch_custom_logit_processor(keep_indices, keep_indices_device)
@@ -366,21 +346,7 @@ class SamplingBatchInfo:
         return merged_dict
 
     def merge_batch(self, other: "SamplingBatchInfo"):
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        logger.info(
-            f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}"
-        )
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
-
-        # Merge penalizer_reqs to match the merged batch
-        # Create a NEW list to avoid modifying the original batch.reqs in scheduler
-        # CRITICAL: Update orchestrator's _backup_reqs immediately after merge to keep in sync
-        # This ensures workers can access correct reqs after pickling (when batch weakref is dead)
-        self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
-        self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:

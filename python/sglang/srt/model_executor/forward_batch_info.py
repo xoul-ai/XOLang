@@ -315,6 +315,13 @@ class ForwardBatch:
         batch: ModelWorkerBatch,
         model_runner: ModelRunner,
     ):
+        import logging
+
+        logger = logging.getLogger(__name__)
+        orch = (
+            batch.sampling_info.penalizer_orchestrator if batch.sampling_info else None
+        )
+
         from sglang.srt.two_batch_overlap import TboForwardBatchPreparer
 
         ret = cls(
@@ -669,7 +676,6 @@ class ForwardBatch:
             )
 
     def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
-
         from sglang.srt.speculative.eagle_utils import EagleDraftInput
 
         assert self.global_num_tokens_cpu is not None
@@ -785,7 +791,6 @@ class ForwardBatch:
             )
 
     def post_forward_mlp_sync_batch(self, logits_output: LogitsProcessorOutput):
-
         self.forward_mode = getattr(self, "_original_forward_mode", self.forward_mode)
         self.batch_size = getattr(self, "_original_batch_size", self.batch_size)
         bs = self.batch_size
@@ -864,12 +869,11 @@ class ForwardBatch:
     # Called before each attention module if using chunked kv cache for prefill
     # Some of the codes are adapted from https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/mla/common.py
     def prepare_chunked_prefix_cache_info(self, device: torch.device):
-
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
-        assert isinstance(
-            self.token_to_kv_pool, MLATokenToKVPool
-        ), "Currently chunked prefix cache can only be used by Deepseek models"
+        assert isinstance(self.token_to_kv_pool, MLATokenToKVPool), (
+            "Currently chunked prefix cache can only be used by Deepseek models"
+        )
 
         if self.prefix_chunk_len is not None:
             # Chunked kv cache info already prepared by prior modules

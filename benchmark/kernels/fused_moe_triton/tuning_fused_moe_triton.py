@@ -13,8 +13,8 @@ from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
 
 from sglang.srt.layers.moe.fused_moe_triton import override_config
-from sglang.srt.layers.moe.fused_moe_triton.fused_moe import (
-    fused_moe,
+from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_moe
+from sglang.srt.layers.moe.fused_moe_triton.fused_moe_triton_config import (
     get_config_dtype_str,
     get_config_file_name,
     get_default_config,
@@ -241,7 +241,6 @@ def get_configs_compute_bound() -> List[Dict[str, int]]:
 
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
-
     def __init__(self, seed: int) -> None:
         torch.set_default_device("cuda")
         torch.cuda.manual_seed_all(0)

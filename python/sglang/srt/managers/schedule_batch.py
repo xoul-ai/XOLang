@@ -784,7 +784,6 @@ class Req:
             prefix = f"Req Time Stats(rid={self.rid}, bootstrap_room={self.bootstrap_room}, input len={len(self.origin_input_ids)}, output len={len(self.output_ids)}, type={self.time_stats.get_type().value})"
         else:
             prefix = f"Req Time Stats(rid={self.rid}, input len={len(self.origin_input_ids)}, output len={len(self.output_ids)}, type={self.time_stats.get_type().value})"
-        logger.info(f"{prefix}: {self.time_stats}")
         self.has_log_time_stats = True
 
     def set_finish_with_abort(self, error_msg: str):
@@ -933,7 +932,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 tree_cache is None
                 or isinstance(tree_cache, SWARadixCache)
                 or isinstance(tree_cache, SWAChunkCache)
-            ), "SWARadixCache or SWAChunkCache is required for SWATokenToKVPoolAllocator"
+            ), (
+                "SWARadixCache or SWAChunkCache is required for SWATokenToKVPoolAllocator"
+            )
             is_hybrid = True
 
         return cls(
@@ -1132,9 +1133,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         else:
             self.encoder_out_cache_loc = torch.cat(encoder_out_cache_loc)
 
-        assert (
-            len(self.out_cache_loc) == self.extend_num_tokens
-        ), f"Expected {len(self.out_cache_loc)}, got {self.extend_num_tokens}"
+        assert len(self.out_cache_loc) == self.extend_num_tokens, (
+            f"Expected {len(self.out_cache_loc)}, got {self.extend_num_tokens}"
+        )
 
     def prepare_for_extend(self):
         self.forward_mode = ForwardMode.EXTEND
@@ -1437,13 +1438,13 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                     swa_available_size = (
                         self.token_to_kv_pool_allocator.swa_available_size()
                     )
-                    assert (
-                        full_available_size > 0 and swa_available_size > 0
-                    ), f"No space left for only one request in SWA mode {full_available_size=}, {swa_available_size=}"
+                    assert full_available_size > 0 and swa_available_size > 0, (
+                        f"No space left for only one request in SWA mode {full_available_size=}, {swa_available_size=}"
+                    )
                 else:
-                    assert (
-                        self.token_to_kv_pool_allocator.available_size() > 0
-                    ), f"No space left for only one request, {self.token_to_kv_pool_allocator.available_size()=}"
+                    assert self.token_to_kv_pool_allocator.available_size() > 0, (
+                        f"No space left for only one request, {self.token_to_kv_pool_allocator.available_size()=}"
+                    )
                 break
 
             first_iter = False
@@ -1649,7 +1650,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         self.sampling_info.filter_batch(keep_indices, keep_indices_device)
         if self.spec_info:
-            self.spec_info.filter_batch(keep_indices_device)
+            # Speculative info must be reindexed to match kept requests.
+            # Use explicit indices (not length-based slicing) to maintain order.
+            self.spec_info.filter_batch(keep_indices_device, has_been_filtered=False)
 
     def merge_batch(self, other: "ScheduleBatch"):
         # Penalizer orchestrator must be merged before Batch.reqs is merged. This is because
@@ -1715,7 +1718,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         global bid
         bid += 1
-        return ModelWorkerBatch(
+        ret = ModelWorkerBatch(
             bid=bid,
             forward_mode=self.forward_mode,
             input_ids=self.input_ids,
@@ -1764,6 +1767,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
             launch_done=self.launch_done,
         )
+        return ret
 
     def copy(self):
         # Only contain fields that will be used by process_batch_result
