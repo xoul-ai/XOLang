@@ -316,13 +316,19 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         # BOS single-token hard block and two-step bigram guard
         B = logits.shape[0]
 
-        # Copy tensor/list references at start to prevent race conditions
+        # Copy ALL tensor/list references at start to prevent race conditions
         active_after_the = self.active_after_the
         suffix_variant_space = self.suffix_variant_space
         suffix_progress = self.suffix_progress
         first_token_ids_set_per_req = self.first_token_ids_set_per_req
         last_hard_blocks = self._last_hard_blocks
         single_token_blacklist = self.single_token_blacklist
+        pending_after_the_at_start = self.pending_after_the_at_start
+        word_with_space_ids = self.word_with_space_ids
+        word_no_space_ids = self.word_no_space_ids
+        first_token_requires_space_per_req = self.first_token_requires_space_per_req
+        suffix_seq_space = self.suffix_seq_space
+        suffix_seq_nospace = self.suffix_seq_nospace
 
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
@@ -377,25 +383,25 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     # Establish variant if not already set
                     if not bool(active_after_the[i].item()):
                         self.active_after_the[i] = True
-                        req_map2 = self.first_token_requires_space_per_req[i] or {}
+                        req_map2 = first_token_requires_space_per_req[i] or {}
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
                         self.suffix_variant_space[i] = need_space_variant2
                         self.suffix_progress[i] = 0
 
             # Two-step guard: if flagged pending or detected just-after-the, block appropriate second-token IDs
-            if self.pending_after_the_at_start[i] or just_after_the:
+            if pending_after_the_at_start[i] or just_after_the:
                 # Use variant decided at cumulate time to avoid drift
                 need_space_variant = bool(suffix_variant_space[i].item())
-                if need_space_variant and self.word_with_space_ids is not None:
-                    logits[i, self.word_with_space_ids] = -float("inf")
+                if need_space_variant and word_with_space_ids is not None:
+                    logits[i, word_with_space_ids] = -float("inf")
                     if (
-                        self.word_with_space_ids is not None
-                        and self.word_with_space_ids.numel() > 0
+                        word_with_space_ids is not None
+                        and word_with_space_ids.numel() > 0
                     ):
-                        self._last_hard_blocks[i] = self.word_with_space_ids
+                        last_hard_blocks[i] = word_with_space_ids
 
                     # LOG: Verify blocking worked by checking specific logit values
-                    blocked_vals = logits[i, self.word_with_space_ids].tolist()
+                    blocked_vals = logits[i, word_with_space_ids].tolist()
 
                     # LOG: Show top candidates after blocking
                     top_k = torch.topk(logits[i], k=10)
@@ -407,13 +413,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
 
                         except Exception:
                             pass
-                elif (not need_space_variant) and self.word_no_space_ids is not None:
-                    logits[i, self.word_no_space_ids] = -float("inf")
+                elif (not need_space_variant) and word_no_space_ids is not None:
+                    logits[i, word_no_space_ids] = -float("inf")
                     if (
-                        self.word_no_space_ids is not None
-                        and self.word_no_space_ids.numel() > 0
+                        word_no_space_ids is not None
+                        and word_no_space_ids.numel() > 0
                     ):
-                        self._last_hard_blocks[i] = self.word_no_space_ids
+                        last_hard_blocks[i] = word_no_space_ids
 
                 # Do not reset pending flag here; allow sampler compute-now to observe it reliably
 
@@ -422,9 +428,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # then hard-block that specific token id.
             if bool(active_after_the[i].item()):
                 seq = (
-                    self.suffix_seq_space
+                    suffix_seq_space
                     if bool(suffix_variant_space[i].item())
-                    else self.suffix_seq_nospace
+                    else suffix_seq_nospace
                 )
                 if seq and len(seq) >= 2:
                     prog = int(suffix_progress[i].item())
@@ -434,7 +440,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         next_tid = int(seq[prog])
                         logits[i, next_tid] = -float("inf")
                         try:
-                            self._last_hard_blocks[i] = torch.tensor(
+                            last_hard_blocks[i] = torch.tensor(
                                 [next_tid], dtype=torch.int64, device=logits.device
                             )
                         except Exception:
