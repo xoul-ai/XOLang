@@ -109,25 +109,18 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         import logging
         logger = logging.getLogger(__name__)
         B, V = logits.shape
-        logger.info(f"DRY _apply: starting with logits shape B={B}, V={V}")
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
             logger.info("DRY _apply: reqs is None, skipping")
             return logits
-        reqs_len = len(reqs)
-        logger.info(f"DRY _apply: got reqs with len={reqs_len}")
-        if reqs_len != B:
-            logger.info(f"DRY _apply: batch size mismatch, reqs={reqs_len} vs B={B}, skipping")
+        if len(reqs) != B:
+            logger.info(f"DRY _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
             return logits
-        mult_len = len(self.dry_multiplier)
-        logger.info(f"DRY _apply: dry_multiplier len={mult_len}")
-        if mult_len != B:
-            logger.info(f"DRY _apply: tensor size mismatch, dry_multiplier={mult_len} vs B={B}, skipping")
+        if len(self.dry_multiplier) != B:
+            logger.info(f"DRY _apply: tensor size mismatch, dry_multiplier={len(self.dry_multiplier)} vs B={B}, skipping")
             return logits
-        logger.info(f"DRY _apply: all checks passed, processing {B} requests")
         for i in range(B):
-            logger.info(f"DRY _apply: processing request i={i}/{B}")
             mult = float(self.dry_multiplier[i].item())
             if mult <= 0.0:
                 continue
@@ -194,23 +187,12 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 pass
 
     def _filter(self, keep_indices: torch.Tensor):
-        import logging
-        logger = logging.getLogger(__name__)
-        old_len = len(self.dry_multiplier)
-        new_len = len(keep_indices)
-        logger.info(f"DRY _filter: filtering from {old_len} to {new_len} requests")
         self.dry_multiplier = self.dry_multiplier[keep_indices]
         self.dry_base = self.dry_base[keep_indices]
         self.dry_allowed_length = self.dry_allowed_length[keep_indices]
         self.breakers = [self.breakers[j] for j in keep_indices.tolist()]
-        logger.info(f"DRY _filter: complete, new dry_multiplier len={len(self.dry_multiplier)}")
 
     def _merge(self, their: "BatchedDRYPenalizer"):
-        import logging
-        logger = logging.getLogger(__name__)
-        old_len = len(self.dry_multiplier)
-        their_len = len(their.dry_multiplier)
-        logger.info(f"DRY _merge: merging {old_len} + {their_len} requests")
         self.dry_multiplier = torch.cat(
             [self.dry_multiplier, their.dry_multiplier], dim=0
         )
@@ -219,4 +201,3 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             [self.dry_allowed_length, their.dry_allowed_length], dim=0
         )
         self.breakers.extend(their.breakers)
-        logger.info(f"DRY _merge: complete, new dry_multiplier len={len(self.dry_multiplier)}")

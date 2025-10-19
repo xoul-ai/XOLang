@@ -60,17 +60,11 @@ class BatchedPenalizerOrchestrator:
         batch = self.batch
         if batch is None:
             # Fallback to backup_reqs for worker thread usage
-            backup_len = len(self._backup_reqs) if self._backup_reqs else 0
-            logger.info(f"Orchestrator.reqs(): batch is None, using backup_reqs (len={backup_len})")
             return self._backup_reqs
-        batch_reqs_len = len(batch.reqs) if batch.reqs else 0
-        logger.info(f"Orchestrator.reqs(): using batch.reqs (len={batch_reqs_len})")
         return batch.reqs
 
     def set_backup_reqs(self, reqs):
         """Set fallback reqs list for worker thread usage (when weakref is dead)."""
-        reqs_len = len(reqs) if reqs else 0
-        logger.info(f"Orchestrator.set_backup_reqs() called with reqs len={reqs_len}")
         self._backup_reqs = reqs
 
     def cumulate_output_tokens(self, output_ids: torch.Tensor):

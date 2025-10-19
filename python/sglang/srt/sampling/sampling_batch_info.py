@@ -229,20 +229,14 @@ class SamplingBatchInfo:
             self.linear_penalty = None
 
     def apply_logits_bias(self, logits: torch.Tensor):
-        import logging
-        logger = logging.getLogger(__name__)
-
         if self.linear_penalty is not None:
             # Used in the overlap mode
             logits.add_(self.linear_penalty)
 
         if self.penalizer_orchestrator and self.penalizer_orchestrator.is_required:
             # Set backup reqs for worker thread usage (weakref may be dead after pickling)
-            reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-            logger.info(f"apply_logits_bias: calling set_backup_reqs with {reqs_len} reqs")
             self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
-            logger.info(f"apply_logits_bias: calling orchestrator.apply with logits shape {logits.shape}")
             self.penalizer_orchestrator.apply(logits)
 
         if self.vocab_mask is not None:
@@ -257,24 +251,16 @@ class SamplingBatchInfo:
         This ensures any -inf masks set by unigram/bigram guards persist even if
         later transformations modified logits.
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
             return
 
         # Set backup reqs for worker thread usage (weakref may be dead after pickling)
-        reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-        logger.info(f"enforce_hard_blocks: calling set_backup_reqs with {reqs_len} reqs")
         self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
         # Prefer compute-now ids to avoid overlap/timing issues
-        logger.info(f"enforce_hard_blocks: calling get_hard_block_ids_now")
         hard = self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
-            logger.info(f"enforce_hard_blocks: no hard blocks returned")
             return
         # Apply per-row masks
-        logger.info(f"enforce_hard_blocks: applying hard blocks to {len(hard)} requests")
         for i, ids in enumerate(hard):
             if ids is None or ids.numel() == 0:
                 continue
