@@ -57,11 +57,14 @@ class BatchedPenalizerOrchestrator:
             self._batch_ref = weakref.ref(value)
 
     def reqs(self):
-        batch = self.batch
-        if batch is None:
-            # Fallback to backup_reqs for worker thread usage
+        # Prefer backup_reqs if it's been set (more up-to-date after merge/filter)
+        if self._backup_reqs is not None:
             return self._backup_reqs
-        return batch.reqs
+        # Fallback to batch.reqs if backup not set
+        batch = self.batch
+        if batch is not None:
+            return batch.reqs
+        return None
 
     def set_backup_reqs(self, reqs):
         """Set fallback reqs list for worker thread usage (when weakref is dead)."""
