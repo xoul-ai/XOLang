@@ -17,6 +17,9 @@ from sglang.srt.sampling.penaltylib.constants import (
     SENTENCE_END_CHARS,
     QUOTE_CHARS,
 )
+from sglang.srt.sampling.penaltylib.vocab_cache import (
+    get_unigram_first_word_index,
+)
 
 
 class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
@@ -183,78 +186,27 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         except:
                             pass
 
-            # Augment watchlist by scanning vocab for single-piece tokens that
-            # start with any banned word after stripping spaces/quotes.
+            # Augment via cached index of first-word -> token ids
             try:
-                vocab_size = getattr(self.orchestrator, "vocab_size", None) or 0
-                banned_words: Set[str] = set()
-                for orig in matches:
-                    low = orig.lower()
-                    if low and (low not in STOPWORDS):
-                        banned_words.add(low)
-                if banned_words and 0 < vocab_size <= 200000:
-                    # Build set of leading chars to ignore (spaces + quotes + SentencePiece space)
-                    ignore_leading = (
-                        "\u0020\n\t\r\f\v\u00a0\u2009\u202f\u3000\u1680"
-                        "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u205f\u00ad\u180e"
-                        "\u2581"  # SentencePiece space character
-                    )
-                    for q in self._OPENING_QUOTES:
-                        ignore_leading += q
-                    added = 0
-                    add_cap = 4096
-                    for tok_id in range(vocab_size):
-                        if tok_id in first_ids:
-                            continue
-                        try:
-                            s = tokenizer.decode([tok_id])
-                        except Exception:
-                            continue
-                        if not s:
-                            continue
-                        k = 0
-                        L = len(s)
-                        while k < L and (s[k] in ignore_leading):
-                            k += 1
-                        if k >= L:
-                            continue
-                        ch0 = s[k]
-                        if not ("A" <= ch0 <= "Z" or "a" <= ch0 <= "z"):
-                            continue
-                        rem = s[k:].lower()
-                        for wlow in banned_words:
-                            if rem.startswith(wlow):
-                                end = len(wlow)
-                                # Word boundary check: next char (if any) is not alpha
-                                if end < len(rem) and rem[end : end + 1].isalpha():
-                                    continue
-                                first_ids.add(int(tok_id))
-                                added += 1
-                                break
-                        if added >= add_cap:
-                            break
-            except Exception as e:
-                # If augmentation fails for any reason, proceed with existing set
-                logger.info(f"UNIGRAM_DEBUG: req_idx={i} vocab scan exception: {e}")
+                vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
+                if matches and tokenizer is not None and vocab_size > 0:
+                    index = get_unigram_first_word_index(tokenizer, vocab_size, self._OPENING_QUOTES)
+                    banned_words: Set[str] = set()
+                    for orig in matches:
+                        low = orig.lower()
+                        if low and (low not in STOPWORDS):
+                            banned_words.add(low)
+                    for w in banned_words:
+                        ids = index.word_to_token_ids.get(w)
+                        if ids:
+                            # extend first_ids with these ids
+                            for tid in ids:
+                                first_ids.add(int(tid))
+            except Exception:
+                # proceed with current set if index build fails for any reason
+                pass
 
-            if tokenizer and first_ids:
-                dont_tokens = []
-                let_tokens = []
-                sample_all_tokens = []
-
-                for tid in list(first_ids):  # Check ALL tokens
-                    try:
-                        decoded = tokenizer.decode([tid])
-                        decoded_lower = decoded.lower()
-                        if "don" in decoded_lower:
-                            dont_tokens.append((tid, repr(decoded)))
-                        if "let" in decoded_lower:
-                            let_tokens.append((tid, repr(decoded)))
-                        # Sample first 80 blocked tokens for analysis
-                        if len(sample_all_tokens) < 80:
-                            sample_all_tokens.append((tid, repr(decoded)))
-                    except:
-                        pass
+            # Remove heavy diagnostic decode loops; keep minimal state only
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(

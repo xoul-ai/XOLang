@@ -257,7 +257,7 @@ class SamplingBatchInfo:
         if self.logit_bias is not None:
             logits.add_(self.logit_bias)
 
-    def enforce_hard_blocks(self, logits: torch.Tensor):
+    def enforce_hard_blocks(self, logits: torch.Tensor, hard_ids: Optional[List[torch.Tensor]] = None):
         """Reapply hard-blocks from penalizers just before sampling.
 
         This ensures any -inf masks set by unigram/bigram guards persist even if
@@ -272,7 +272,7 @@ class SamplingBatchInfo:
         # Set backup reqs for worker thread usage (weakref may be dead after pickling)
         self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
         # Prefer compute-now ids to avoid overlap/timing issues
-        hard = self.penalizer_orchestrator.get_hard_block_ids_now()
+        hard = hard_ids if hard_ids is not None else self.penalizer_orchestrator.get_hard_block_ids_now()
         if not hard:
             return
         # Apply per-row masks

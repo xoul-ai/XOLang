@@ -62,27 +62,20 @@ class Sampler(nn.Module):
         """
         logits = logits_output.next_token_logits
 
-        # DIAGNOSTIC: Log top10 before any additional processing
-        try:
-            if logger.isEnabledFor(logging.INFO):
-                rows = min(len(logits), 2)
-                for i in range(rows):
-                    topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-
-        except Exception:
-            pass
+        # Avoid heavy diagnostics in hot path
 
         # Apply the custom logit processors if registered in the sampling info.
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
-            try:
-                if logger.isEnabledFor(logging.INFO):
-                    rows = min(len(logits), 2)
-                    for i in range(rows):
-                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
+            pass
 
-            except Exception:
-                pass
+        # Compute hard-block ids once for this step (if any penalizers)
+        hard_now = None
+        try:
+            if sampling_info.penalizer_orchestrator is not None:
+                hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
+        except Exception:
+            hard_now = None
 
         # Optionally synchronize blocked ids across TP to avoid rank divergence
         try:
@@ -91,11 +84,7 @@ class Sampler(nn.Module):
                 and dist.is_initialized()
                 and self.tp_sync_group is not None
             ):
-                hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
-                    if sampling_info.penalizer_orchestrator is not None
-                    else None
-                )
+                hard = hard_now
                 if hard:
                     # Compute local max length
                     local_max = 0
@@ -152,36 +141,7 @@ class Sampler(nn.Module):
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
         try:
-            before = None
-            if logger.isEnabledFor(logging.INFO):
-                # count how many rows have any hard-blocks
-                pass
-            sampling_info.enforce_hard_blocks(logits)
-            if logger.isEnabledFor(logging.INFO):
-                # Log a brief summary of blocked ids (first 2 rows)
-                hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
-                    if sampling_info.penalizer_orchestrator is not None
-                    else None
-                )
-                if hard:
-                    for bi in range(min(len(hard), 2)):
-                        ids = hard[bi]
-                        if ids is None or ids.numel() == 0:
-                            continue
-                        # report a few blocked ids and their logits
-                        sample_ids = ids[: min(8, ids.numel())]
-                        vals = logits[bi, sample_ids].tolist()
-
-            # Also show top10 after enforcing
-            try:
-                if logger.isEnabledFor(logging.INFO):
-                    rows = min(len(logits), 2)
-                    for i in range(rows):
-                        topk = torch.topk(logits[i], k=min(10, logits.shape[1]))
-
-            except Exception:
-                pass
+            sampling_info.enforce_hard_blocks(logits, hard_now)
         except Exception:
             # Never break sampling due to diagnostics
             pass
@@ -207,28 +167,12 @@ class Sampler(nn.Module):
 
             # Post process logits
             logits.div_(sampling_info.temperatures)
-            try:
-                if logger.isEnabledFor(logging.INFO):
-                    rows = min(len(logits), 2)
-
-            except Exception:
-                pass
             logits[:] = torch.softmax(logits, dim=-1)
-            try:
-                if logger.isEnabledFor(logging.INFO):
-                    rows = min(len(logits), 2)
-
-            except Exception:
-                pass
             probs = logits
 
             # Belt-and-suspenders: zero out blocked ids on probs and renormalize
             try:
-                hard = (
-                    sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
-                    if sampling_info.penalizer_orchestrator is not None
-                    else None
-                )
+                hard = hard_now
                 if hard:
                     # Zero masked indices
                     for bi, ids in enumerate(hard):
@@ -243,16 +187,6 @@ class Sampler(nn.Module):
                     if torch.any(zero_mask):
                         # If everything got zeroed (pathological), fall back to original softmax already in `probs`
                         pass
-                    if logger.isEnabledFor(logging.INFO):
-                        # Log a brief summary for first 2 rows
-                        for bi in range(min(len(hard), 2)):
-                            ids = hard[bi]
-                            if ids is None or (
-                                hasattr(ids, "numel") and ids.numel() == 0
-                            ):
-                                continue
-                            sample_ids = ids[: min(8, ids.numel())]
-
             except Exception:
                 pass
             del logits

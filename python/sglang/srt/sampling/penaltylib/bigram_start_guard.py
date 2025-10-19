@@ -14,6 +14,7 @@ from sglang.srt.sampling.penaltylib.constants import (
     QUOTE_CHARS,
     SENTENCE_END_CHARS,
 )
+from sglang.srt.sampling.penaltylib.vocab_cache import get_bigram_cache
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             (len(reqs),), dtype=torch.bool, device=device
         )
 
-        # Precomputed token ID sets shared across requests (on CPU then moved lazily)
+        # Precomputed token ID sets shared across requests (move to device at prepare)
         self.first_token_ids_per_req: List[Optional[torch.Tensor]] = [None] * len(reqs)
         self.first_token_ids_set_per_req: List[Optional[Set[int]]] = [None] * len(reqs)
         self.first_token_requires_space_per_req: List[Optional[Dict[int, bool]]] = [
@@ -70,7 +71,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.suffix_seq_nospace: Optional[List[int]] = None
 
         # Build shared sets by scanning the vocab once using any tokenizer available.
-        # We will attempt using the first non-None tokenizer; if none available, we skip.
+        # Use the first non-None tokenizer. If none available, skip.
         tokenizer0 = None
         for r in reqs:
             tok = getattr(r, "tokenizer", None)
@@ -79,66 +80,18 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 break
 
         if tokenizer0 is not None:
-            # Step-1: block single tokens that start with "the word" (boundary-aware)
-            st_blacklist: Set[int] = set()
-            for tid in range(vocab_size):
-                try:
-                    s = tokenizer0.decode([tid])
-                except Exception:
-                    continue
-                if not s:
-                    continue
-                # Normalize SentencePiece space character (U+2581) to regular space
-                s_norm = s.replace("\u2581", " ")
-                s_low = s_norm.lstrip().lower()
-                if not s_low.startswith("the word"):
-                    continue
-                # boundary after "word": next char must be non-alpha or absent
-                after = s_low[len("the word") : len("the word") + 1]
-                if after and after.isalpha():
-                    continue
-                st_blacklist.add(int(tid))
-            if st_blacklist:
+            cache = get_bigram_cache(tokenizer0, vocab_size, QUOTE_CHARS)
+            if cache.single_token_blacklist:
                 self.single_token_blacklist = torch.tensor(
-                    sorted(st_blacklist), dtype=torch.int64, device=device
+                    cache.single_token_blacklist, dtype=torch.int64, device=device
                 )
-
-            # Step-2: collect second-token candidates depending on presence of leading space
-            w_space_ids: Set[int] = set()
-            no_space_ids: Set[int] = set()
-            # Scan vocab for decodes starting with " word" (and boundary) / "word" (and boundary)
-            for tid in range(vocab_size):
-                try:
-                    s = tokenizer0.decode([tid])
-                except Exception:
-                    continue
-                if not s:
-                    continue
-                # Normalize SentencePiece space character (U+2581) to regular space
-                s_norm = s.replace("\u2581", " ")
-                sl = s_norm.lower()
-                if sl.startswith(" word"):
-                    # check boundary after word
-                    pos = len(" word")
-                    if pos < len(sl) and sl[pos : pos + 1].isalpha():
-                        pass
-                    else:
-                        w_space_ids.add(int(tid))
-
-                if sl.startswith("word"):
-                    pos = len("word")
-                    if pos < len(sl) and sl[pos : pos + 1].isalpha():
-                        pass
-                    else:
-                        no_space_ids.add(int(tid))
-
-            if w_space_ids:
+            if cache.word_with_space_ids:
                 self.word_with_space_ids = torch.tensor(
-                    sorted(w_space_ids), dtype=torch.int64, device=device
+                    cache.word_with_space_ids, dtype=torch.int64, device=device
                 )
-            if no_space_ids:
+            if cache.word_no_space_ids:
                 self.word_no_space_ids = torch.tensor(
-                    sorted(no_space_ids), dtype=torch.int64, device=device
+                    cache.word_no_space_ids, dtype=torch.int64, device=device
                 )
             # Canonical encode path for exact suffix matching in multi-step cases
             try:
@@ -150,97 +103,23 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             except Exception:
                 self.suffix_seq_nospace = None
 
-        for i, r in enumerate(reqs):
-            tok = getattr(r, "tokenizer", None)
-            if tok is None:
-                continue
-            first_ids: Set[int] = set()
-            requires_space: Dict[int, bool] = {}
-
-            # Build a small surface set for "The" and lowercase variants with typical prefixes
-            variants = [
-                "The",
-                " the",
-                "the",
-                " The",
-            ]
-            for q in QUOTE_CHARS:
-                variants.extend([f"{q}The", f" {q}The", f"{q}the", f" {q}the"])
-
-            for surf in variants:
-                try:
-                    ids = tok.encode(surf)
-                except Exception:
-                    continue
-                if not ids:
-                    continue
-                fid = int(ids[0])
-                if fid in first_ids:
-                    continue
-                first_ids.add(fid)
-                try:
-                    decoded = tok.decode([fid])
-                except Exception:
-                    decoded = ""
-                # If the first token decode ends with space, then the next token should be "word" (no leading space)
-                # Otherwise, we need next token that starts with " word"
-                requires_space[fid] = not (decoded.endswith(" "))
-
-            # Augment: scan entire vocab for tokens that decode to a THE-like start after stripping leading quotes/spaces
-            try:
-                vocab_size = self.orchestrator.vocab_size
-            except Exception:
-                vocab_size = None
-            if vocab_size is not None:
-                ignore_leading = " "
-                for q in QUOTE_CHARS:
-                    ignore_leading += q
-                added = 0
-                add_cap = 8192
-                for tid in range(vocab_size):
-                    if tid in first_ids:
-                        continue
-                    try:
-                        s = tok.decode([tid])
-                    except Exception:
-                        continue
-                    if not s:
-                        continue
-                    k = 0
-                    L = len(s)
-                    while k < L and (s[k] in ignore_leading):
-                        k += 1
-                    if k >= L:
-                        continue
-                    ch0 = s[k]
-                    if not ("A" <= ch0 <= "Z" or "a" <= ch0 <= "z"):
-                        continue
-                    rem = s[k:].lower()
-                    # Require boundary after 'the'
-                    if rem.startswith("the"):
-                        end = 3
-                        if end < len(rem) and rem[end : end + 1].isalpha():
-                            continue
-                        fid = int(tid)
-                        first_ids.add(fid)
-                        added += 1
-                        # Most THE tokens won't end with space; default mapping
-                        if fid not in requires_space:
-                            requires_space[fid] = True
-                    if added >= add_cap:
-                        break
-
-            if first_ids:
-                self.first_token_ids_per_req[i] = torch.tensor(
-                    sorted(first_ids), dtype=torch.int64, device=device
-                )
-                self.first_token_ids_set_per_req[i] = set(first_ids)
-                self.first_token_requires_space_per_req[i] = requires_space
-
-            else:
-                self.first_token_ids_per_req[i] = None
-                self.first_token_ids_set_per_req[i] = None
-                self.first_token_requires_space_per_req[i] = None
+        if tokenizer0 is not None:
+            cache = get_bigram_cache(tokenizer0, vocab_size, QUOTE_CHARS)
+            first_ids_sorted = sorted(cache.the_first_token_ids)
+            first_ids_tensor = (
+                torch.tensor(first_ids_sorted, dtype=torch.int64, device=device)
+                if first_ids_sorted
+                else None
+            )
+            for i, _ in enumerate(reqs):
+                if first_ids_tensor is not None:
+                    self.first_token_ids_per_req[i] = first_ids_tensor
+                    self.first_token_ids_set_per_req[i] = set(cache.the_first_token_ids)
+                    self.first_token_requires_space_per_req[i] = dict(cache.requires_space)
+                else:
+                    self.first_token_ids_per_req[i] = None
+                    self.first_token_ids_set_per_req[i] = None
+                    self.first_token_requires_space_per_req[i] = None
 
         # Initialize per-request FSM for suffix multi-step tracking
         self.active_after_the = torch.zeros(
