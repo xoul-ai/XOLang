@@ -511,6 +511,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_requires_space_per_req = [
             self.first_token_requires_space_per_req[j] for j in keep.tolist()
         ]
+        # Filter FSM tracking tensors
+        self.active_after_the = self.active_after_the[keep]
+        self.suffix_variant_space = self.suffix_variant_space[keep]
+        self.suffix_progress = self.suffix_progress[keep]
+        self._last_hard_blocks = [
+            self._last_hard_blocks[j] for j in keep.tolist()
+        ]
 
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
         self.pending_after_the_at_start = torch.cat(
@@ -521,6 +528,17 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_requires_space_per_req.extend(
             their.first_token_requires_space_per_req
         )
+        # Merge FSM tracking tensors
+        self.active_after_the = torch.cat(
+            [self.active_after_the, their.active_after_the], dim=0
+        )
+        self.suffix_variant_space = torch.cat(
+            [self.suffix_variant_space, their.suffix_variant_space], dim=0
+        )
+        self.suffix_progress = torch.cat(
+            [self.suffix_progress, their.suffix_progress], dim=0
+        )
+        self._last_hard_blocks.extend(their._last_hard_blocks)
         # Global sets should be equivalent; prefer keeping ours if both exist
         if self.single_token_blacklist is None:
             self.single_token_blacklist = their.single_token_blacklist

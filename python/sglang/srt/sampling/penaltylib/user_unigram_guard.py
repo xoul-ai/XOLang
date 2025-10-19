@@ -355,6 +355,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.generated_counts = self.generated_counts[keep]
         self.first_token_ids = [self.first_token_ids[j] for j in keep.tolist()]
         self.full_prefixes = [self.full_prefixes[j] for j in keep.tolist()]
+        self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
@@ -368,6 +369,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         )
         self.first_token_ids.extend(their.first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
+        self._last_hard_blocks.extend(their._last_hard_blocks)
 
     def _is_start_position(self, req) -> bool:
         _out_ids = getattr(req, "output_ids", None) or []
