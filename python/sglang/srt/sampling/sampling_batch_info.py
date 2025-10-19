@@ -74,6 +74,7 @@ class SamplingBatchInfo:
     @classmethod
     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
         import logging
+
         logger = logging.getLogger(__name__)
 
         global_server_args_dict = cls._get_global_server_args_dict()
@@ -144,7 +145,9 @@ class SamplingBatchInfo:
         # While we can choose not to even create the class instances if they are not required, this
         # could add additional complexity to the {ScheduleBatch} class, especially we need to
         # handle {filter_batch()} and {merge_batch()} cases as well.
-        enable_bigram = cls._get_global_server_args_dict().get("enable_bigram_start_guard_the_word", True)
+        enable_bigram = cls._get_global_server_args_dict().get(
+            "enable_bigram_start_guard_the_word", True
+        )
 
         penalizer_orchestrator = penaltylib.BatchedPenalizerOrchestrator(
             vocab_size=vocab_size,
@@ -156,12 +159,12 @@ class SamplingBatchInfo:
                 penaltylib.BatchedDRYPenalizer,
                 penaltylib.BatchedUserUnigramStartGuardPenalizer,
             }
-            |
-            ({penaltylib.BatchedFixedBigramStartGuardPenalizer}
-             if enable_bigram
-             else set()),
+            | (
+                {penaltylib.BatchedFixedBigramStartGuardPenalizer}
+                if enable_bigram
+                else set()
+            ),
         )
-
 
         ret = cls(
             temperatures=temperatures,
@@ -236,12 +239,14 @@ class SamplingBatchInfo:
         if self.penalizer_orchestrator and self.penalizer_orchestrator.is_required:
             # Set backup reqs for worker thread usage (weakref may be dead after pickling)
             import logging
+
             logger = logging.getLogger(__name__)
             B = logits.shape[0]
             reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-            logger.info(f"apply_logits_bias: B={B}, penalizer_reqs_len={reqs_len}, orch_id={id(self.penalizer_orchestrator)}")
             if reqs_len != B:
-                logger.info(f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}, orch_id={id(self.penalizer_orchestrator)}")
+                logger.info(
+                    f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}, orch_id={id(self.penalizer_orchestrator)}"
+                )
             self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
             self.penalizer_orchestrator.apply(logits)
@@ -258,7 +263,10 @@ class SamplingBatchInfo:
         This ensures any -inf masks set by unigram/bigram guards persist even if
         later transformations modified logits.
         """
-        if self.penalizer_orchestrator is None or not self.penalizer_orchestrator.is_required:
+        if (
+            self.penalizer_orchestrator is None
+            or not self.penalizer_orchestrator.is_required
+        ):
             return
 
         # Set backup reqs for worker thread usage (weakref may be dead after pickling)
@@ -359,9 +367,12 @@ class SamplingBatchInfo:
 
     def merge_batch(self, other: "SamplingBatchInfo"):
         import logging
+
         logger = logging.getLogger(__name__)
 
-        logger.info(f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}")
+        logger.info(
+            f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}"
+        )
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
 
         # Merge penalizer_reqs to match the merged batch
@@ -370,7 +381,9 @@ class SamplingBatchInfo:
         other_len = len(other.penalizer_reqs) if other.penalizer_reqs else 0
         self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
         new_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-        logger.info(f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}, orch_id={id(self.penalizer_orchestrator)}")
+        logger.info(
+            f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}, orch_id={id(self.penalizer_orchestrator)}"
+        )
 
         # CRITICAL: Update orchestrator's _backup_reqs immediately after merge to keep in sync
         # This ensures workers can access correct reqs after pickling (when batch weakref is dead)
