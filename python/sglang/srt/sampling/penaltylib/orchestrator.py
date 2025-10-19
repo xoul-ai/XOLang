@@ -105,6 +105,9 @@ class BatchedPenalizerOrchestrator:
         if not self.is_required:
             return
 
+        # Clear backup_reqs during filter so penalizers use the actual batch.reqs
+        self._backup_reqs = None
+
         if len(keep_indices) == 0:
             self.is_required = False
             for penalizer in self.penalizers.values():
@@ -134,6 +137,10 @@ class BatchedPenalizerOrchestrator:
         """
         if not self.is_required and not their.is_required:
             return
+
+        # Clear backup_reqs during merge so penalizers use the actual batch.reqs
+        self._backup_reqs = None
+        their._backup_reqs = None
 
         self.is_required = True
         for penalizer, their_penalizer in their.penalizers.items():

@@ -356,6 +356,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
+        import logging
+        logger = logging.getLogger(__name__)
+        old_len = len(self.guard_window)
+        their_len = len(their.guard_window)
+
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
         self.hard_at_bos = torch.cat([self.hard_at_bos, their.hard_at_bos], dim=0)
         self.hard_at_all_starts = torch.cat(
@@ -368,6 +373,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_ids.extend(their.first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
         self._last_hard_blocks.extend(their._last_hard_blocks)
+
+        new_len = len(self.guard_window)
+        logger.info(f"UnigramGuard _merge: merged tensors {old_len} + {their_len} = {new_len}")
 
     def _is_start_position(self, req) -> bool:
         _out_ids = getattr(req, "output_ids", None) or []

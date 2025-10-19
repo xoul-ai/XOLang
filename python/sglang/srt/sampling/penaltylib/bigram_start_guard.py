@@ -540,6 +540,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         ]
 
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
+        old_len = len(self.active_after_the)
+        their_len = len(their.active_after_the)
+
         self.pending_after_the_at_start = torch.cat(
             [self.pending_after_the_at_start, their.pending_after_the_at_start], dim=0
         )
@@ -559,6 +562,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             [self.suffix_progress, their.suffix_progress], dim=0
         )
         self._last_hard_blocks.extend(their._last_hard_blocks)
+
+        new_len = len(self.active_after_the)
+        logger.info(f"BigramGuard _merge: merged tensors {old_len} + {their_len} = {new_len}")
         # Global sets should be equivalent; prefer keeping ours if both exist
         if self.single_token_blacklist is None:
             self.single_token_blacklist = their.single_token_blacklist
