@@ -279,6 +279,8 @@ class SamplingBatchInfo:
         # Filter penalizer_reqs to match the filtered batch
         if self.penalizer_reqs is not None:
             self.penalizer_reqs = [self.penalizer_reqs[i] for i in keep_indices]
+            # CRITICAL: Update orchestrator's _backup_reqs immediately after filter to keep in sync
+            self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
 
         if self.has_custom_logit_processor:
             self._filter_batch_custom_logit_processor(keep_indices, keep_indices_device)
@@ -369,6 +371,11 @@ class SamplingBatchInfo:
         self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
         new_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
         logger.info(f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}, orch_id={id(self.penalizer_orchestrator)}")
+
+        # CRITICAL: Update orchestrator's _backup_reqs immediately after merge to keep in sync
+        # This ensures workers can access correct reqs after pickling (when batch weakref is dead)
+        self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
+        logger.info(f"merge_batch: updated backup_reqs to size {new_len}")
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:

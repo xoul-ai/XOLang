@@ -116,8 +116,8 @@ class BatchedPenalizerOrchestrator:
         if not self.is_required:
             return
 
-        # Clear backup_reqs during filter so penalizers use the actual batch.reqs
-        self._backup_reqs = None
+        # DON'T clear backup_reqs during filter - it's needed for workers after pickling!
+        # self._backup_reqs = None  # REMOVED
 
         if len(keep_indices) == 0:
             self.is_required = False
@@ -154,9 +154,10 @@ class BatchedPenalizerOrchestrator:
         if not self.is_required and not their.is_required:
             return
 
-        # Clear backup_reqs during merge so penalizers use the actual batch.reqs
-        self._backup_reqs = None
-        their._backup_reqs = None
+        # DON'T clear backup_reqs during merge - it's needed for workers after pickling!
+        # After unpickling, batch weakref is dead, so backup_reqs is the only way to access reqs
+        # self._backup_reqs = None  # REMOVED - causes infinite generation after merge
+        # their._backup_reqs = None  # REMOVED
 
         self.is_required = True
         for penalizer, their_penalizer in their.penalizers.items():
