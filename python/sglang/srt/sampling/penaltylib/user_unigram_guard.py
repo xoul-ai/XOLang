@@ -89,7 +89,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             # Match words including contractions (e.g., "don't", "we're", "would've")
             matches = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text) if text else []
-            logger.info(f"UNIGRAM_DEBUG: req_idx={i} extracted {len(matches)} words from unigrams_text, first 20: {matches[:20]}")
 
             cap = 1500
             seen: Set[str] = set()
@@ -107,8 +106,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                             break
                 if len(seen) >= cap:
                     break
-
-            logger.info(f"UNIGRAM_DEBUG: req_idx={i} after stopword filtering, {len(words_with_variants)} word variants remain, first 30: {words_with_variants[:30]}")
 
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
@@ -152,9 +149,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                                 s_stripped = s.strip()
                                 # Check if it's a contraction fragment: starts with apostrophe/quote and has <=3 chars total
                                 is_contraction_fragment = (
-                                    len(s_stripped) <= 3 and
-                                    len(s_stripped) > 0 and
-                                    s_stripped[0] in ("'", '"', ''', ''', '`')
+                                    len(s_stripped) <= 3
+                                    and len(s_stripped) > 0
+                                    and s_stripped[0] in ("'", '"', """, """, "`")
                                 )
                                 if is_contraction_fragment:
                                     continue  # Skip this token, keep looking
@@ -164,9 +161,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         # Double-check: skip if it's a contraction fragment
                         s_check = tokenizer.decode([tok_id]).strip()
                         is_frag = (
-                            len(s_check) <= 3 and
-                            len(s_check) > 0 and
-                            s_check[0] in ("'", '"', ''', ''', '`')
+                            len(s_check) <= 3
+                            and len(s_check) > 0
+                            and s_check[0] in ("'", '"', """, """, "`")
                         )
                         if not is_frag:
                             first_ids.add(tok_id)
@@ -176,9 +173,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                         try:
                             s_check = tokenizer.decode([int(ids[0])]).strip()
                             is_frag = (
-                                len(s_check) <= 3 and
-                                len(s_check) > 0 and
-                                s_check[0] in ("'", '"', ''', ''', '`')
+                                len(s_check) <= 3
+                                and len(s_check) > 0
+                                and s_check[0] in ("'", '"', """, """, "`")
                             )
                             if not is_frag:
                                 first_ids.add(int(ids[0]))
@@ -195,7 +192,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     low = orig.lower()
                     if low and (low not in STOPWORDS):
                         banned_words.add(low)
-                logger.info(f"UNIGRAM_DEBUG: req_idx={i} banned_words after STOPWORDS filter ({len(banned_words)} words): {sorted(banned_words)[:30]}")
                 if banned_words and 0 < vocab_size <= 200000:
                     # Build set of leading chars to ignore (spaces + quotes + SentencePiece space)
                     ignore_leading = (
@@ -232,9 +228,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                                 # Word boundary check: next char (if any) is not alpha
                                 if end < len(rem) and rem[end : end + 1].isalpha():
                                     continue
-                                # Log if this is a "don" token (to catch "don't")
-                                if "don" in s.lower():
-                                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} VOCAB_SCAN adding tok_id={tok_id} decoded={repr(s)} rem={repr(rem)} matched_word={repr(wlow)}")
                                 first_ids.add(int(tok_id))
                                 added += 1
                                 break
@@ -244,8 +237,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 # If augmentation fails for any reason, proceed with existing set
                 logger.info(f"UNIGRAM_DEBUG: req_idx={i} vocab scan exception: {e}")
 
-            logger.info(f"UNIGRAM_DEBUG: req_idx={i} final first_ids count: {len(first_ids)}")
-            # Check ALL tokens for patterns - check for "don", "let", and sample all blocked tokens
             if tokenizer and first_ids:
                 dont_tokens = []
                 let_tokens = []
@@ -264,12 +255,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                             sample_all_tokens.append((tid, repr(decoded)))
                     except:
                         pass
-
-                if dont_tokens:
-                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(dont_tokens)} 'don' tokens: {dont_tokens}")
-                if let_tokens:
-                    logger.info(f"UNIGRAM_DEBUG: req_idx={i} found {len(let_tokens)} 'let' tokens: {let_tokens}")
-                logger.info(f"UNIGRAM_DEBUG: req_idx={i} sample of blocked tokens (first 80): {sample_all_tokens}")
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
@@ -323,7 +308,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                                 dont_blocked.append((tid, decoded))
                         except:
                             pass
-                logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} HARD_BLOCK at BOS, blocking {first_ids.numel()} tokens, dont_tokens={dont_blocked}")
                 logits[i, first_ids] = -float("inf")
                 self._last_hard_blocks[i] = first_ids
             elif (not is_bos) and bool(self.hard_at_all_starts[i].item()):
@@ -336,13 +320,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                                 dont_blocked.append((tid, decoded))
                         except:
                             pass
-                logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} HARD_BLOCK at start position, blocking {first_ids.numel()} tokens, dont_tokens={dont_blocked}")
                 logits[i, first_ids] = -float("inf")
                 self._last_hard_blocks[i] = first_ids
             else:
                 bias = float(self.bias_vals[i].item())
                 if bias != 0.0:
-                    logger.info(f"UNIGRAM_APPLY: rid={rid} idx={i} SOFT_BIAS={bias} applied to {first_ids.numel()} tokens")
                     logits[i, first_ids] += bias
         return logits
 
@@ -406,7 +388,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         out: List[Optional[torch.Tensor]] = [None] * len(reqs)
         for i, req in enumerate(reqs):
             first_ids = self.first_token_ids[i]
-            if first_ids is None or (hasattr(first_ids, "numel") and first_ids.numel() == 0):
+            if first_ids is None or (
+                hasattr(first_ids, "numel") and first_ids.numel() == 0
+            ):
                 continue
             # Respect window if we can infer tokens generated
             try:
