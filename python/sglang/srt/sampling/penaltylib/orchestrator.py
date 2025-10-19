@@ -22,6 +22,7 @@ class BatchedPenalizerOrchestrator:
     ):
         import logging
         import time
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
         logger = logging.getLogger(__name__)
 
         self.vocab_size = vocab_size
@@ -32,7 +33,8 @@ class BatchedPenalizerOrchestrator:
         self._backup_reqs_len = 0  # Track length to only log changes
         self._unique_id = f"{id(self)}_{int(time.time() * 1000000)}"  # Unique ID for tracking
 
-        logger.info(f"Orchestrator __init__: created new orchestrator, unique_id={self._unique_id}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
+        if DEBUG:
+            logger.info(f"Orchestrator __init__: created new orchestrator, unique_id={self._unique_id}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
 
         is_required = False
         for penalizer in self.penalizers.values():
@@ -40,7 +42,8 @@ class BatchedPenalizerOrchestrator:
             is_required |= pen_is_required
         self.is_required = is_required
 
-        logger.info(f"Orchestrator __init__: initialized, unique_id={self._unique_id}, is_required={is_required}")
+        if DEBUG:
+            logger.info(f"Orchestrator __init__: initialized, unique_id={self._unique_id}, is_required={is_required}")
 
     def __getstate__(self):
         # For pickling: convert weakref to None since batch won't survive pickling
@@ -86,12 +89,13 @@ class BatchedPenalizerOrchestrator:
         """Set fallback reqs list for worker thread usage (when weakref is dead)."""
         import logging
         import traceback
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
         logger = logging.getLogger(__name__)
 
         reqs_len = len(reqs) if reqs else 0
 
-        # Only log when length changes or when it's None (critical issue)
-        if reqs_len != self._backup_reqs_len or reqs is None:
+        # Only log when DEBUG is enabled and length changes or when it's None (critical issue)
+        if DEBUG and (reqs_len != self._backup_reqs_len or reqs is None):
             stack = traceback.extract_stack()
             caller = stack[-2] if len(stack) >= 2 else None
             caller_info = f"{caller.filename}:{caller.lineno}" if caller else "unknown"
@@ -133,8 +137,10 @@ class BatchedPenalizerOrchestrator:
             keep_indices (torch.Tensor): Tensor of indices to keep in the batch.
         """
         import logging
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
         logger = logging.getLogger(__name__)
-        logger.info(f"Orchestrator filter: self_id={id(self)}, keep={len(keep_indices)}, is_required={self.is_required}")
+        if DEBUG:
+            logger.info(f"Orchestrator filter: self_id={id(self)}, keep={len(keep_indices)}, is_required={self.is_required}")
 
         if not self.is_required:
             return
@@ -146,7 +152,8 @@ class BatchedPenalizerOrchestrator:
             self.is_required = False
             for penalizer in self.penalizers.values():
                 penalizer.teardown()
-            logger.info(f"Orchestrator filter: teardown (empty batch), self_id={id(self)}")
+            if DEBUG:
+                logger.info(f"Orchestrator filter: teardown (empty batch), self_id={id(self)}")
             return
 
         is_required = False
@@ -171,8 +178,10 @@ class BatchedPenalizerOrchestrator:
             their (BatchedPenalizerOrchestrator): The orchestrator to merge into this one.
         """
         import logging
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
         logger = logging.getLogger(__name__)
-        logger.info(f"Orchestrator merge: self_id={id(self)}, their_id={id(their)}, self.is_required={self.is_required}, their.is_required={their.is_required}")
+        if DEBUG:
+            logger.info(f"Orchestrator merge: self_id={id(self)}, their_id={id(their)}, self.is_required={self.is_required}, their.is_required={their.is_required}")
 
         if not self.is_required and not their.is_required:
             return
@@ -186,7 +195,8 @@ class BatchedPenalizerOrchestrator:
         for penalizer, their_penalizer in their.penalizers.items():
             self.penalizers[penalizer].merge(their_penalizer)
 
-        logger.info(f"Orchestrator merge: completed, self_id={id(self)}")
+        if DEBUG:
+            logger.info(f"Orchestrator merge: completed, self_id={id(self)}")
 
     def get_hard_block_ids(self):
         """Collect per-request hard-block token IDs from penalizers.
@@ -315,10 +325,12 @@ class _BatchedPenalizer(abc.ABC):
 
     def merge(self, their: "_BatchedPenalizer"):
         import logging
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
         logger = logging.getLogger(__name__)
 
         if not self._is_prepared and not their._is_prepared:
-            logger.info(f"{self.__class__.__name__} merge: both unprepared, skipping merge")
+            if DEBUG:
+                logger.info(f"{self.__class__.__name__} merge: both unprepared, skipping merge")
             return
 
         self.prepare()

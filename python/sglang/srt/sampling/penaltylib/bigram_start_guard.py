@@ -38,13 +38,16 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         return True
 
     def _prepare(self):
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
+
         reqs = self.orchestrator.reqs()
         device = self.orchestrator.device
         vocab_size = self.orchestrator.vocab_size
 
-        logger.info(
-            f"BigramGuard _prepare: preparing with {len(reqs)} reqs, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-        )
+        if DEBUG:
+            logger.info(
+                f"BigramGuard _prepare: preparing with {len(reqs)} reqs, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+            )
 
         # Per-request state used across steps
         self.pending_after_the_at_start = torch.zeros(
@@ -253,21 +256,25 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks: List[Optional[torch.Tensor]] = [None] * len(reqs)
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
+
         # Track if we just emitted a first-token for "The" at a start position
         if output_ids is None or output_ids.numel() == 0:
             return
         reqs = self.orchestrator.reqs()
         # If reqs unavailable (e.g., weakref died after pickling), skip
         if reqs is None:
-            logger.info(
-                f"BigramGuard _cumulate: reqs is None, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-            )
+            if DEBUG:
+                logger.info(
+                    f"BigramGuard _cumulate: reqs is None, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+                )
             return
         # Check for batch size mismatch (can happen during filter/merge)
         if len(reqs) != len(self.active_after_the):
-            logger.info(
-                f"BigramGuard _cumulate: batch size mismatch, reqs={len(reqs)} vs active_after_the={len(self.active_after_the)}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-            )
+            if DEBUG:
+                logger.info(
+                    f"BigramGuard _cumulate: batch size mismatch, reqs={len(reqs)} vs active_after_the={len(self.active_after_the)}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+                )
             return
         for i, req in enumerate(reqs):
             tok = getattr(req, "tokenizer", None)
@@ -347,25 +354,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             )
             return logits
         if len(reqs) != B:
-            logger.info(
-                f"BigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}, tensor_size={len(active_after_the)}"
-            )
             return logits
         if len(active_after_the) != B:
-            logger.info(
-                f"BigramGuard _apply: tensor size mismatch, active_after_the={len(active_after_the)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}, reqs_len={len(reqs)}"
-            )
             return logits
         # Check list sizes as well (these are not tensors, so they need separate validation)
         if len(first_token_ids_set_per_req) != B:
-            logger.info(
-                f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(first_token_ids_set_per_req)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-            )
             return logits
         if len(last_hard_blocks) != B:
-            logger.info(
-                f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-            )
             return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
@@ -503,9 +498,11 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         out[i] = self.word_no_space_ids
                         decided = True
             except Exception as e:
-                logger.info(
-                    f"BigramGuard COMPUTE_NOW_PATH_A: rid={rid} idx={i} exception={e}"
-                )
+                from sglang.srt.sampling.penaltylib.toggle import DEBUG
+                if DEBUG:
+                    logger.info(
+                        f"BigramGuard COMPUTE_NOW_PATH_A: rid={rid} idx={i} exception={e}"
+                    )
             if decided:
                 continue
             # Path B: infer from request state if cumulated state not set yet on this rank
@@ -545,11 +542,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         return out
 
     def _filter(self, keep_indices: torch.Tensor):
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
+
         keep = keep_indices
         old_len = len(self.active_after_the) if hasattr(self, "active_after_the") else 0
-        logger.info(
-            f"BigramGuard _filter: filtering from {old_len} to {len(keep)}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-        )
+        if DEBUG:
+            logger.info(
+                f"BigramGuard _filter: filtering from {old_len} to {len(keep)}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+            )
 
         self.pending_after_the_at_start = self.pending_after_the_at_start[keep]
         self.first_token_ids_per_req = [
@@ -568,18 +568,22 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
 
         new_len = len(self.active_after_the)
-        logger.info(
-            f"BigramGuard _filter: filtered to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-        )
+        if DEBUG:
+            logger.info(
+                f"BigramGuard _filter: filtered to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+            )
 
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
+        from sglang.srt.sampling.penaltylib.toggle import DEBUG
+
         old_len = len(self.active_after_the) if hasattr(self, "active_after_the") else 0
         their_len = (
             len(their.active_after_the) if hasattr(their, "active_after_the") else 0
         )
-        logger.info(
-            f"BigramGuard _merge: merging {old_len} + {their_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-        )
+        if DEBUG:
+            logger.info(
+                f"BigramGuard _merge: merging {old_len} + {their_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+            )
 
         self.pending_after_the_at_start = torch.cat(
             [self.pending_after_the_at_start, their.pending_after_the_at_start], dim=0
@@ -602,9 +606,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks.extend(their._last_hard_blocks)
 
         new_len = len(self.active_after_the)
-        logger.info(
-            f"BigramGuard _merge: merged to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
-        )
+        if DEBUG:
+            logger.info(
+                f"BigramGuard _merge: merged to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}"
+            )
 
         # Global sets should be equivalent; prefer keeping ours if both exist
         if self.single_token_blacklist is None:
