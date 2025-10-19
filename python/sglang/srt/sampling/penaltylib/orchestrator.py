@@ -272,7 +272,11 @@ class _BatchedPenalizer(abc.ABC):
         self._filter(keep_indices=keep_indices)
 
     def merge(self, their: "_BatchedPenalizer"):
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self._is_prepared and not their._is_prepared:
+            logger.info(f"{self.__class__.__name__} merge: both unprepared, skipping merge")
             return
 
         self.prepare()
