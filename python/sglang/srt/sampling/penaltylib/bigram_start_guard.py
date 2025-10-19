@@ -341,7 +341,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
-            orch_unique_id = getattr(self.orchestrator, '_unique_id', 'NO_ID')
+            orch_unique_id = getattr(self.orchestrator, "_unique_id", "NO_ID")
             logger.error(
                 f"BigramGuard _apply: reqs is None! orch_unique_id={orch_unique_id}, backup_reqs={self.orchestrator._backup_reqs}, batch_ref_alive={self.orchestrator.batch is not None}"
             )
@@ -383,10 +383,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     and single_token_blacklist.numel() > 0
                 ):
                     last_hard_blocks[i] = single_token_blacklist
-                    orch_unique_id = getattr(self.orchestrator, '_unique_id', 'NO_ID')
-                    logger.info(
-                        f"BigramGuard APPLY: rid={rid} BOS blocking {len(single_token_blacklist)} single-token candidates, orch_id={orch_unique_id}"
-                    )
+                    orch_unique_id = getattr(self.orchestrator, "_unique_id", "NO_ID")
 
             # Two-step guard: proactively detect if we are immediately after a THE token at a start,
             # even if cumulate missed due to overlap scheduling. If so, set variant and apply masks.
@@ -416,15 +413,12 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
                         self.suffix_variant_space[i] = need_space_variant2
                         self.suffix_progress[i] = 0
-                        logger.info(
-                            f"BigramGuard APPLY: rid={rid} detected 'The' at start (proactive), last_token='{decoded_last}', needs_space={need_space_variant2}"
-                        )
 
             # Two-step guard: if flagged pending or detected just-after-the, block appropriate second-token IDs
             if pending_after_the_at_start[i] or just_after_the:
                 # Use variant decided at cumulate time to avoid drift
                 need_space_variant = bool(suffix_variant_space[i].item())
-                orch_unique_id = getattr(self.orchestrator, '_unique_id', 'NO_ID')
+                orch_unique_id = getattr(self.orchestrator, "_unique_id", "NO_ID")
                 if need_space_variant and word_with_space_ids is not None:
                     logits[i, word_with_space_ids] = -float("inf")
                     if (
@@ -432,12 +426,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                         and word_with_space_ids.numel() > 0
                     ):
                         last_hard_blocks[i] = word_with_space_ids
-                        logger.info(f"BigramGuard APPLY: rid={rid} blocking {len(word_with_space_ids)} ' word' tokens (with space), orch_id={orch_unique_id}")
                 elif (not need_space_variant) and word_no_space_ids is not None:
                     logits[i, word_no_space_ids] = -float("inf")
                     if word_no_space_ids is not None and word_no_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_no_space_ids
-                        logger.info(f"BigramGuard APPLY: rid={rid} blocking {len(word_no_space_ids)} 'word' tokens (no space), orch_id={orch_unique_id}")
 
                 # Do not reset pending flag here; allow sampler compute-now to observe it reliably
 
