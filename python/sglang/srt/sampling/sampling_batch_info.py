@@ -239,8 +239,9 @@ class SamplingBatchInfo:
             logger = logging.getLogger(__name__)
             B = logits.shape[0]
             reqs_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
+            logger.info(f"apply_logits_bias: B={B}, penalizer_reqs_len={reqs_len}, orch_id={id(self.penalizer_orchestrator)}")
             if reqs_len != B:
-                logger.info(f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}")
+                logger.info(f"apply_logits_bias: SIZE MISMATCH! penalizer_reqs len={reqs_len} but logits B={B}, orch_id={id(self.penalizer_orchestrator)}")
             self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
             # Used in the non-overlap mode
             self.penalizer_orchestrator.apply(logits)
@@ -358,6 +359,7 @@ class SamplingBatchInfo:
         import logging
         logger = logging.getLogger(__name__)
 
+        logger.info(f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}")
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
 
         # Merge penalizer_reqs to match the merged batch
@@ -366,7 +368,7 @@ class SamplingBatchInfo:
         other_len = len(other.penalizer_reqs) if other.penalizer_reqs else 0
         self.penalizer_reqs = (self.penalizer_reqs or []) + (other.penalizer_reqs or [])
         new_len = len(self.penalizer_reqs) if self.penalizer_reqs else 0
-        logger.info(f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}")
+        logger.info(f"merge_batch: merged penalizer_reqs {old_len} + {other_len} = {new_len}, orch_id={id(self.penalizer_orchestrator)}")
 
         # Merge the custom logit processors and custom params lists
         if self.has_custom_logit_processor or other.has_custom_logit_processor:

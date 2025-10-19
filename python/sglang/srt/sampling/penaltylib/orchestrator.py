@@ -20,17 +20,24 @@ class BatchedPenalizerOrchestrator:
         batch: ScheduleBatch,
         penalizers: Set[Type["_BatchedPenalizer"]],
     ):
+        import logging
+        logger = logging.getLogger(__name__)
+
         self.vocab_size = vocab_size
         self._batch_ref = weakref.ref(batch)
         self.device = batch.device
         self.penalizers = {Penalizer: Penalizer(self) for Penalizer in penalizers}
         self._backup_reqs = None  # Fallback reqs list for worker thread usage
 
+        logger.info(f"Orchestrator __init__: created new orchestrator, self_id={id(self)}, batch_id={id(batch)}, num_reqs={len(batch.reqs) if batch and batch.reqs else 0}")
+
         is_required = False
         for penalizer in self.penalizers.values():
             pen_is_required = penalizer.prepare_if_required()
             is_required |= pen_is_required
         self.is_required = is_required
+
+        logger.info(f"Orchestrator __init__: initialized, self_id={id(self)}, is_required={is_required}")
 
     def __getstate__(self):
         # For pickling: convert weakref to None since batch won't survive pickling
@@ -102,6 +109,10 @@ class BatchedPenalizerOrchestrator:
         Args:
             keep_indices (torch.Tensor): Tensor of indices to keep in the batch.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Orchestrator filter: self_id={id(self)}, keep={len(keep_indices)}, is_required={self.is_required}")
+
         if not self.is_required:
             return
 
@@ -112,6 +123,7 @@ class BatchedPenalizerOrchestrator:
             self.is_required = False
             for penalizer in self.penalizers.values():
                 penalizer.teardown()
+            logger.info(f"Orchestrator filter: teardown (empty batch), self_id={id(self)}")
             return
 
         is_required = False
@@ -135,6 +147,10 @@ class BatchedPenalizerOrchestrator:
         Args:
             their (BatchedPenalizerOrchestrator): The orchestrator to merge into this one.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Orchestrator merge: self_id={id(self)}, their_id={id(their)}, self.is_required={self.is_required}, their.is_required={their.is_required}")
+
         if not self.is_required and not their.is_required:
             return
 
@@ -145,6 +161,8 @@ class BatchedPenalizerOrchestrator:
         self.is_required = True
         for penalizer, their_penalizer in their.penalizers.items():
             self.penalizers[penalizer].merge(their_penalizer)
+
+        logger.info(f"Orchestrator merge: completed, self_id={id(self)}")
 
     def get_hard_block_ids(self):
         """Collect per-request hard-block token IDs from penalizers.

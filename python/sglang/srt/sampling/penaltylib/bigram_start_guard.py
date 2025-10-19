@@ -42,6 +42,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         device = self.orchestrator.device
         vocab_size = self.orchestrator.vocab_size
 
+        logger.info(f"BigramGuard _prepare: preparing with {len(reqs)} reqs, self_id={id(self)}, orch_id={id(self.orchestrator)}")
+
         # Per-request state used across steps
         self.pending_after_the_at_start = torch.zeros(
             (len(reqs),), dtype=torch.bool, device=device
@@ -255,11 +257,11 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         # If reqs unavailable (e.g., weakref died after pickling), skip
         if reqs is None:
-            logger.info("BigramGuard _cumulate: reqs is None, skipping")
+            logger.info(f"BigramGuard _cumulate: reqs is None, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}")
             return
         # Check for batch size mismatch (can happen during filter/merge)
         if len(reqs) != len(self.active_after_the):
-            logger.info(f"BigramGuard _cumulate: batch size mismatch, reqs={len(reqs)} vs active_after_the={len(self.active_after_the)}, skipping")
+            logger.info(f"BigramGuard _cumulate: batch size mismatch, reqs={len(reqs)} vs active_after_the={len(self.active_after_the)}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}")
             return
         for i, req in enumerate(reqs):
             tok = getattr(req, "tokenizer", None)
@@ -333,20 +335,20 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if reqs is None:
-            logger.info("BigramGuard _apply: reqs is None, skipping")
+            logger.info(f"BigramGuard _apply: reqs is None, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}")
             return logits
         if len(reqs) != B:
-            logger.info(f"BigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping")
+            logger.info(f"BigramGuard _apply: batch size mismatch, reqs={len(reqs)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}, tensor_size={len(active_after_the)}")
             return logits
         if len(active_after_the) != B:
-            logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(active_after_the)} vs B={B}, skipping")
+            logger.info(f"BigramGuard _apply: tensor size mismatch, active_after_the={len(active_after_the)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}, reqs_len={len(reqs)}")
             return logits
         # Check list sizes as well (these are not tensors, so they need separate validation)
         if len(first_token_ids_set_per_req) != B:
-            logger.info(f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(first_token_ids_set_per_req)} vs B={B}, skipping")
+            logger.info(f"BigramGuard _apply: list size mismatch, first_token_ids_set_per_req={len(first_token_ids_set_per_req)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}")
             return logits
         if len(last_hard_blocks) != B:
-            logger.info(f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping")
+            logger.info(f"BigramGuard _apply: list size mismatch, _last_hard_blocks={len(last_hard_blocks)} vs B={B}, skipping, self_id={id(self)}, orch_id={id(self.orchestrator)}")
             return logits
         # Reset last hard-blocks
         for j in range(len(reqs)):
@@ -532,6 +534,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
+        old_len = len(self.active_after_the) if hasattr(self, 'active_after_the') else 0
+        logger.info(f"BigramGuard _filter: filtering from {old_len} to {len(keep)}, self_id={id(self)}, orch_id={id(self.orchestrator)}")
+
         self.pending_after_the_at_start = self.pending_after_the_at_start[keep]
         self.first_token_ids_per_req = [
             self.first_token_ids_per_req[j] for j in keep.tolist()
@@ -550,10 +555,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             self._last_hard_blocks[j] for j in keep.tolist()
         ]
 
+        new_len = len(self.active_after_the)
+        logger.info(f"BigramGuard _filter: filtered to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}")
+
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
         old_len = len(self.active_after_the) if hasattr(self, 'active_after_the') else 0
         their_len = len(their.active_after_the) if hasattr(their, 'active_after_the') else 0
-        logger.info(f"BigramGuard _merge: merging {old_len} + {their_len}")
+        logger.info(f"BigramGuard _merge: merging {old_len} + {their_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}")
 
         self.pending_after_the_at_start = torch.cat(
             [self.pending_after_the_at_start, their.pending_after_the_at_start], dim=0
@@ -576,7 +584,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self._last_hard_blocks.extend(their._last_hard_blocks)
 
         new_len = len(self.active_after_the)
-        logger.info(f"BigramGuard _merge: merged to {new_len}")
+        logger.info(f"BigramGuard _merge: merged to {new_len}, self_id={id(self)}, orch_id={id(self.orchestrator)}")
 
         # Global sets should be equivalent; prefer keeping ours if both exist
         if self.single_token_blacklist is None:
