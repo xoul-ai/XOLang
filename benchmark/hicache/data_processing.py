@@ -439,8 +439,8 @@ def get_gen_prefix_cache_path(args, tokenizer):
 
     # Create a unique cache filename based on the generation parameters
     cache_key = (
-        f"gen_prefix_{args.gen_num_groups}_{args.gen_prompts_per_group}_"
-        f"{args.gen_system_prompt_len}_{args.gen_question_len}_{args.gen_output_len}_"
+        f"gen_prefix_{args.gsp_num_groups}_{args.gsp_prompts_per_group}_"
+        f"{args.gsp_system_prompt_len}_{args.gsp_question_len}_{args.gsp_output_len}_"
         f"{tokenizer.__class__.__name__}.pkl"
     )
     return cache_dir / cache_key
@@ -483,6 +483,7 @@ def sample_generated_shared_prefix_requests(
     input_requests = []
     total_input_tokens = 0
     total_output_tokens = 0
+    # print('hello?WTFWTF')
 
     for group_idx in tqdm(range(num_groups), desc="Generating system prompt"):
         system_prompt = system_prompts[group_idx]
@@ -493,6 +494,8 @@ def sample_generated_shared_prefix_requests(
             question = questions[group_idx * prompts_per_group + prompt_idx]
             full_prompt = f"{system_prompt}\n\n{question}"
             prompt_len = len(tokenizer.encode(full_prompt))
+            # print('prompt_len', prompt_len)
+            # print('PROMPT_LEN', prompt_len, 'OUTPUT_LEN', output_len)
             input_requests[-1].append((full_prompt, prompt_len, output_len))
             total_input_tokens += prompt_len
             total_output_tokens += output_len
@@ -577,11 +580,11 @@ def get_dataset(args, tokenizer):
         )
     elif args.dataset_name == "generated-shared-prefix":
         input_requests = sample_generated_shared_prefix_requests(
-            num_groups=args.gen_num_groups,
-            prompts_per_group=args.gen_prompts_per_group,
-            system_prompt_len=args.gen_system_prompt_len,
-            question_len=args.gen_question_len,
-            output_len=args.gen_output_len,
+            num_groups=args.gsp_num_groups,
+            prompts_per_group=args.gsp_prompts_per_group,
+            system_prompt_len=args.gsp_system_prompt_len,
+            question_len=args.gsp_question_len,
+            output_len=args.gsp_output_len,
             args=args,
             tokenizer=tokenizer,
         )

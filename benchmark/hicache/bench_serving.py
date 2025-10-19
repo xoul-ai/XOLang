@@ -101,7 +101,9 @@ async def async_request_openai_completions(
             prompt[1] + prompt[2]  # input_len + output_len
             for prompt in request_func_input.prompts[:prompt_idx]
         )
+        # print('HHOHOHOHO', prompt_len, input_len)
         prompt_len += input_len
+        # print("TOTAL PROMPT LENGTH", prompt_len)
 
         # Messages
         messages.append(
@@ -142,10 +144,13 @@ async def async_request_openai_completions(
                             # NOTE: Some completion API might have a last
                             # usage summary response without a token so we
                             # want to check a token was generated
-                            if data["usage"] is not None and len(data["usage"]) > 0:
+                            # print(data, 'data')
+                            if "usage" in data and data["usage"] is not None and len(data["usage"]) > 0:
                                 actual_prompt_len = data["usage"]["prompt_tokens"]
                                 actual_output_len = data["usage"]["completion_tokens"]
                                 continue
+
+                            # print(data, 'data')
                             delta = data["choices"][0]["delta"]
 
                             if delta.get("content", None):
@@ -417,6 +422,17 @@ async def benchmark(
     if enable_shared_prefix:
         input_requests = [[r] for requests in input_requests for r in requests]
     inputs_requests_queue = asyncio.Queue(maxsize=len(input_requests))
+    # Add this around line 420 in benchmark/hicache/bench_serving.py
+    # print("=== SAMPLE CONVERSATIONS ===")
+    # for i, conv in enumerate(input_requests):  # Show first 3 conversations
+    #     print(f"\nConversation {i+1}:")
+    #     for j, (prompt, prompt_len, output_len) in enumerate(conv):
+    #         print(f"  Turn {j+1}:")
+    #         # print(f"    Prompt: {prompt[:200]}..." if len(prompt) > 200 else f"    Prompt: {prompt}")
+    #         print(f"    Prompt tokens: {prompt_len}")
+    #         print(f"    Expected output: {output_len} tokens")
+    # print("=== END SAMPLE ===")
+
     print("Starting initial single prompt test run...")
     # NOTE: Just use the first request of the first conversation for warmup
     test_input = RequestFuncInput(
@@ -456,6 +472,7 @@ async def benchmark(
             print("Profiler started")
 
     for request in input_requests:
+        # print('output', len(request[0]), 'input', len(request[1]), 'FMLMFLMFLMFLFMFLFLF')
         request_func_input = RequestFuncInput(
             model=model_id,
             prompts=request,
