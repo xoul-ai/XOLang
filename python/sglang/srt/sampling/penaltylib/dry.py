@@ -10,48 +10,28 @@ from sglang.srt.sampling.penaltylib.orchestrator import (
 
 
 def _find_all_subsequence(haystack: List[int], needle: List[int]) -> List[int]:
-    """Find all start indices where `needle` occurs in `haystack` (exact match).
-
-    Implementation uses KMP for linear-time search with identical semantics to
-    the previous nested-loop version, but significantly lower CPU cost.
-    """
-    m = len(needle)
-    if m == 0:
+    if not needle:
         return []
-    n = len(haystack)
-    if m > n:
+    n = len(needle)
+    lim = len(haystack) - n
+    if lim < 0:
         return []
-    # Build LPS (longest proper prefix which is also suffix) array for needle
-    lps = [0] * m
-    length = 0
-    i = 1
-    while i < m:
-        if needle[i] == needle[length]:
-            length += 1
-            lps[i] = length
-            i += 1
-        elif length != 0:
-            length = lps[length - 1]
-        else:
-            lps[i] = 0
-            i += 1
-
-    # Scan haystack
     out: List[int] = []
-    i = 0  # index for haystack
-    j = 0  # index for needle
-    while i < n:
-        if haystack[i] == needle[j]:
+    first = needle[0]
+    i = 0
+    while i <= lim:
+        while i <= lim and haystack[i] != first:
             i += 1
-            j += 1
-            if j == m:
-                out.append(i - j)
-                j = lps[j - 1]
-        else:
-            if j != 0:
-                j = lps[j - 1]
-            else:
-                i += 1
+        if i > lim:
+            break
+        ok = True
+        for j in range(1, n):
+            if haystack[i + j] != needle[j]:
+                ok = False
+                break
+        if ok:
+            out.append(i)
+        i += 1
     return out
 
 
@@ -176,21 +156,44 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
 
             best_k = 0
             candidates: List[int] = []
+            # Build positions map for prefix once to reduce scanning
+            pos_map = {}
+            for idx, tok in enumerate(prefix):
+                # store positions where this token occurs
+                lst = pos_map.get(tok)
+                if lst is None:
+                    lst = []
+                    pos_map[tok] = lst
+                lst.append(idx)
 
             for k in range(max_search, allow, -1):
                 suffix = tail[-k:]
-                indices = _find_all_subsequence(prefix, suffix)
-                if indices:
-                    # 4) Gather tokens that historically followed the matched suffix
-                    tmp: List[int] = []
-                    for idx in indices:
-                        j = idx + k
-                        if j < len(hist):
-                            tmp.append(hist[j])
-                    if tmp:
-                        best_k = k
-                        candidates = tmp
-                        break
+                first_tok = suffix[0]
+                pos_list = pos_map.get(first_tok)
+                if not pos_list:
+                    continue
+                # Check only candidate positions with matching first token
+                tmp: List[int] = []
+                k_minus_1 = k - 1
+                for start in pos_list:
+                    end = start + k
+                    if end > len(prefix):
+                        continue
+                    ok = True
+                    # Compare remaining k-1 tokens
+                    for j in range(1, k):
+                        if prefix[start + j] != suffix[j]:
+                            ok = False
+                            break
+                    if ok:
+                        # collect next token after the matched suffix if exists
+                        jn = start + k
+                        if jn < len(hist):
+                            tmp.append(hist[jn])
+                if tmp:
+                    best_k = k
+                    candidates = tmp
+                    break
 
             if best_k <= 0 or not candidates:
                 continue
