@@ -313,6 +313,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 bias = float(bias_vals[i].item())
                 if bias != 0.0:
                     logits[i, first_ids] += bias
+                    # Optional DEBUG: log top-k next tokens when soft bias is applied
+                    from sglang.srt.sampling.penaltylib.toggle import DEBUG
+                    if DEBUG:
+                        try:
+                            self._debug_log_topk_row(logits, i, req, tag="unigram-soft")
+                        except Exception:
+                            pass
 
         # Apply hard blocks in a batched op
         if any(x is not None for x in to_block):
@@ -320,7 +327,35 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 apply_blocked_ids_mask_inplace,
             )
             apply_blocked_ids_mask_inplace(logits, to_block, fill_value=-float("inf"))
+            # Optional DEBUG: log top-k next tokens when hard block is applied
+            from sglang.srt.sampling.penaltylib.toggle import DEBUG
+            if DEBUG:
+                for i in range(B):
+                    if to_block[i] is not None:
+                        try:
+                            self._debug_log_topk_row(logits, i, reqs[i], tag="unigram-hard")
+                        except Exception:
+                            pass
         return logits
+
+    def _debug_log_topk_row(self, logits: torch.Tensor, i: int, req, tag: str):
+        """Log top-k tokens and their probabilities for row i (DEBUG only)."""
+        import torch
+        topk = min(10, logits.size(1))
+        vals, idx = torch.topk(logits[i], topk)
+        probs = torch.softmax(logits[i], dim=-1)[idx]
+        tok = getattr(req, "tokenizer", None)
+        items = []
+        for tid, p in zip(idx.tolist(), probs.tolist()):
+            if tok is not None:
+                try:
+                    s = tok.decode([int(tid)])
+                except Exception:
+                    s = ""
+            else:
+                s = ""
+            items.append((tid, round(float(p), 5), s))
+        logger.info(f"UnigramGuard {tag} row={i} topk={items}")
 
     def _filter(self, keep_indices: torch.Tensor):
         keep = keep_indices
