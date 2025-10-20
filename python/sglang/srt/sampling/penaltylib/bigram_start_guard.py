@@ -171,8 +171,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             first_ids_set = self.first_token_ids_set_per_req[i]
             if not first_ids_set:
                 continue
-            # Only trigger at sentence/reply starts
-            if not self._is_start_position(req):
+            # Only trigger at sentence/reply starts (relative to context before last token)
+            if not self._is_start_position_before_last(req):
                 continue
             if int(last_id) in first_ids_set:
                 self.pending_after_the_at_start[i] = True
@@ -288,13 +288,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             just_after_the = False
             first_ids_set2 = first_token_ids_set_per_req[i]
             if first_ids_set2 and out_ids_list:
-                # We consider we are at start of sentence if out_len == 1 or if start-detect on tail of decoded prefix is True
+                # We consider we are at start of sentence if out_len == 1 or if start-detect
+                # on the context BEFORE the last token is True
                 is_start_here = False
                 if len(out_ids_list) == 1:
                     is_start_here = True
                 else:
-                    # Reuse start detection logic
-                    is_start_here = self._is_start_position(req)
+                    # Reuse start detection logic (relative to prefix)
+                    is_start_here = self._is_start_position_before_last(req)
                 last_id2 = int(out_ids_list[-1])
                 if is_start_here and (last_id2 in first_ids_set2):
                     just_after_the = True
@@ -416,7 +417,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             )
 
             if first_ids_set2 and out_ids_list:
-                is_start_here = len(out_ids_list) == 1 or self._is_start_position(req)
+                is_start_here = len(out_ids_list) == 1 or self._is_start_position_before_last(req)
 
                 if is_start_here:
                     last_id2 = int(out_ids_list[-1])
@@ -545,3 +546,35 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         ch = tail[i]
         is_start = ch in QUOTE_CHARS or ch in SENTENCE_END_CHARS
         return is_start
+
+    def _is_start_position_before_last(self, req) -> bool:
+        """Check start-of-sentence relative to the position BEFORE the last token.
+
+        This is critical for detecting that a just-emitted THE-like token occurred at a
+        sentence start; checking the full tail including the last token would see an alpha
+        char and miss the boundary. Here we examine the context prior to the last token.
+        """
+        out_ids = getattr(req, "output_ids", None) or []
+        if len(out_ids) == 0:
+            return True
+        if len(out_ids) == 1:
+            # Before the first token is BOS, which we treat as start
+            return True
+        tok = getattr(req, "tokenizer", None)
+        if tok is None:
+            return False
+        prefix = out_ids[:-1]
+        n = min(12, len(prefix))
+        try:
+            tail = tok.decode(prefix[-n:])
+        except Exception:
+            return False
+        if not tail:
+            return False
+        i = len(tail) - 1
+        while i >= 0 and tail[i].isspace():
+            i -= 1
+        if i < 0:
+            return False
+        ch = tail[i]
+        return (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
