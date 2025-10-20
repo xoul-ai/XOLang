@@ -272,14 +272,18 @@ class SamplingBatchInfo:
         # Set backup reqs for worker thread usage (weakref may be dead after pickling)
         self.penalizer_orchestrator.set_backup_reqs(self.penalizer_reqs)
         # Prefer compute-now ids to avoid overlap/timing issues
-        hard = hard_ids if hard_ids is not None else self.penalizer_orchestrator.get_hard_block_ids_now()
+        hard = (
+            hard_ids
+            if hard_ids is not None
+            else self.penalizer_orchestrator.get_hard_block_ids_now()
+        )
         if not hard:
             return
-        # Apply per-row masks
-        for i, ids in enumerate(hard):
-            if ids is None or ids.numel() == 0:
-                continue
-            logits[i, ids] = -float("inf")
+        # Apply per-batch mask efficiently
+        from sglang.srt.sampling.penaltylib.mask_utils import (
+            apply_blocked_ids_mask_inplace,
+        )
+        apply_blocked_ids_mask_inplace(logits, hard, fill_value=-float("inf"))
 
     def filter_batch(self, keep_indices: List[int], keep_indices_device: torch.Tensor):
         self.penalizer_orchestrator.filter(keep_indices_device)

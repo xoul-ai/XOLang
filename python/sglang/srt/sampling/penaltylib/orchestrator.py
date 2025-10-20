@@ -210,8 +210,8 @@ class BatchedPenalizerOrchestrator:
         reqs = self.reqs()
         if not reqs:
             return None
-        # Initialize accumulator per request
-        merged: list = [None] * len(reqs)
+        # Accumulate all per-penalizer ids first, then unique once per row
+        accum: list = [[] for _ in range(len(reqs))]
         for pen in self.penalizers.values():
             lst = pen.get_last_hard_block_ids()
             if not lst:
@@ -219,11 +219,16 @@ class BatchedPenalizerOrchestrator:
             for i, ids in enumerate(lst):
                 if ids is None:
                     continue
-                if merged[i] is None:
-                    merged[i] = ids
-                else:
-                    # union: concatenate then unique
-                    merged[i] = torch.unique(torch.cat([merged[i], ids]))
+                accum[i].append(ids)
+
+        merged: list = [None] * len(reqs)
+        for i, parts in enumerate(accum):
+            if not parts:
+                continue
+            if len(parts) == 1:
+                merged[i] = parts[0]
+            else:
+                merged[i] = torch.unique(torch.cat(parts))
         return merged
 
     def get_hard_block_ids_now(self):
@@ -240,41 +245,31 @@ class BatchedPenalizerOrchestrator:
         if not reqs:
             return None
 
-        merged: list = [None] * len(reqs)
+        # Accumulate all per-penalizer ids first (compute-now preferred),
+        # then unique once per row
+        accum: list = [[] for _ in range(len(reqs))]
         for pen in self.penalizers.values():
-            pen_name = pen.__class__.__name__
-            # Prefer compute-now
             try:
-                lst_computed = pen.get_computed_hard_block_ids()
-            except Exception as e:
-                lst_computed = None
-
-            # Check if lst has any non-None values
-            has_values = False
-            if lst_computed is not None:
-                has_values = any(x is not None for x in lst_computed)
-                if has_values and len(lst_computed) > 0:
-                    non_none_count = sum(1 for x in lst_computed if x is not None)
-
-            lst = lst_computed
-            if not has_values:
-                # fall back to last ids if compute-now not available or all None
-                lst_last = pen.get_last_hard_block_ids()
-                lst = lst_last
-
+                lst = pen.get_computed_hard_block_ids()
+            except Exception:
+                lst = None
+            if not lst or not any(x is not None for x in lst):
+                lst = pen.get_last_hard_block_ids()
             if not lst:
                 continue
-
             for i, ids in enumerate(lst):
                 if ids is None:
                     continue
-                if merged[i] is None:
-                    merged[i] = ids
-                else:
-                    merged[i] = torch.unique(torch.cat([merged[i], ids]))
+                accum[i].append(ids)
 
-        # Final result
-        non_none_merged = sum(1 for x in merged if x is not None)
+        merged: list = [None] * len(reqs)
+        for i, parts in enumerate(accum):
+            if not parts:
+                continue
+            if len(parts) == 1:
+                merged[i] = parts[0]
+            else:
+                merged[i] = torch.unique(torch.cat(parts))
         return merged
 
 

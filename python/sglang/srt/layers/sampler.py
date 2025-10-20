@@ -36,6 +36,9 @@ class Sampler(nn.Module):
         super().__init__()
         self.use_nan_detection = global_server_args_dict["enable_nan_detection"]
         self.tp_sync_group = get_tp_group().device_group
+        # Small reusable buffers to reduce per-step allocations
+        self._tp_pad_buf = None  # shape [>=B, >=K]
+        self._row_sums_buf = None  # shape [>=B, 1]
 
         if is_dp_attention_enabled():
             self.tp_sync_group = get_attention_tp_group().device_group
@@ -101,29 +104,55 @@ class Sampler(nn.Module):
                     max_len = int(local_max_tensor.item())
                     if max_len > 0:
                         B = len(hard)
-                        pad = torch.full(
-                            (B, max_len), -1, device=logits.device, dtype=torch.int64
+                        # Reuse pad buffer and slice
+                        need_alloc = (
+                            self._tp_pad_buf is None
+                            or self._tp_pad_buf.size(0) < B
+                            or self._tp_pad_buf.size(1) < max_len
                         )
+                        if need_alloc:
+                            self._tp_pad_buf = torch.empty(
+                                (max(B, 1), max(max_len, 1)),
+                                device=logits.device,
+                                dtype=torch.int64,
+                            )
+                        pad = self._tp_pad_buf[:B, :max_len]
+                        pad.fill_(-1)
                         for i, ids in enumerate(hard):
                             if ids is None or ids.numel() == 0:
                                 continue
                             l = min(int(ids.numel()), max_len)
                             pad[i, :l] = ids[:l]
-                        # All-gather across TP
+                        # All-gather across TP, chunking wide columns to reduce single-transfer size
                         world_size = dist.get_world_size(self.tp_sync_group)
-                        gathered = [torch.empty_like(pad) for _ in range(world_size)]
-                        dist.all_gather(gathered, pad, group=self.tp_sync_group)
-                        # Union per row
+                        CHUNK_COL_THRESHOLD = 8192
+                        unions_per_row = [[] for _ in range(B)]
+                        if max_len > CHUNK_COL_THRESHOLD:
+                            chunk = 4096
+                            for start in range(0, max_len, chunk):
+                                end = min(start + chunk, max_len)
+                                pad_view = pad[:, start:end]
+                                gathered = [torch.empty_like(pad_view) for _ in range(world_size)]
+                                dist.all_gather(gathered, pad_view, group=self.tp_sync_group)
+                                for i in range(B):
+                                    for t in gathered:
+                                        valid = t[i]
+                                        valid = valid[valid >= 0]
+                                        if valid.numel() > 0:
+                                            unions_per_row[i].append(valid)
+                        else:
+                            gathered = [torch.empty_like(pad) for _ in range(world_size)]
+                            dist.all_gather(gathered, pad, group=self.tp_sync_group)
+                            for i in range(B):
+                                for t in gathered:
+                                    row = t[i]
+                                    valid = row[row >= 0]
+                                    if valid.numel() > 0:
+                                        unions_per_row[i].append(valid)
+                        # Union per row once
                         for i in range(B):
-                            union = []
-                            for t in gathered:
-                                row = t[i]
-                                valid = row[row >= 0]
-                                if valid.numel() > 0:
-                                    union.append(valid)
-                            if union:
-                                merged = torch.unique(torch.cat(union))
-                                hard[i] = merged
+                            if unions_per_row[i]:
+                                hard[i] = torch.unique(torch.cat(unions_per_row[i]))
                         # Log a small summary regardless, to see empties
                         for bi in range(min(B, 2)):
                             ids = hard[bi]
@@ -174,19 +203,27 @@ class Sampler(nn.Module):
             try:
                 hard = hard_now
                 if hard:
-                    # Zero masked indices
-                    for bi, ids in enumerate(hard):
-                        if ids is None or (hasattr(ids, "numel") and ids.numel() == 0):
-                            continue
-                        probs[bi, ids] = 0.0
+                    # Zero masked indices in a batched op
+                    from sglang.srt.sampling.penaltylib.mask_utils import (
+                        apply_blocked_ids_mask_inplace,
+                    )
+                    apply_blocked_ids_mask_inplace(probs, hard, fill_value=0.0)
                     # Renormalize each row to sum 1.0 (avoid div by zero)
-                    row_sums = probs.sum(dim=-1, keepdim=True)
+                    # Reuse row_sums buffer if possible
+                    B = probs.size(0)
+                    need_rowsums_alloc = (
+                        self._row_sums_buf is None
+                        or self._row_sums_buf.size(0) < B
+                    )
+                    if need_rowsums_alloc:
+                        self._row_sums_buf = torch.empty(
+                            (B, 1), device=probs.device, dtype=probs.dtype
+                        )
+                    row_sums = probs.sum(dim=-1, keepdim=True, out=self._row_sums_buf[:B, :1])
                     zero_mask = row_sums.squeeze(-1) == 0
                     if torch.any(~zero_mask):
                         probs[~zero_mask] = probs[~zero_mask] / row_sums[~zero_mask]
-                    if torch.any(zero_mask):
-                        # If everything got zeroed (pathological), fall back to original softmax already in `probs`
-                        pass
+                    # If everything got zeroed (pathological), keep as-is
             except Exception:
                 pass
             del logits
