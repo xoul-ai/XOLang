@@ -35,6 +35,7 @@ class _UnigramIndex:
 
 _bigram_cache_by_tok: Dict[int, _BigramCache] = {}
 _unigram_index_by_tok: Dict[int, _UnigramIndex] = {}
+_unigram_prefix_index_by_tok: Dict[tuple, Dict[str, List[int]]] = {}
 
 
 _SP_SPACE = "\u2581"
@@ -172,3 +173,41 @@ def get_unigram_first_word_index(
         _unigram_index_by_tok[key] = built
     return built
 
+
+def get_unigram_prefix_index(
+    tokenizer, vocab_size: int, quote_chars: Set[str], prefix_len: int
+) -> Dict[str, List[int]]:
+    """Build or fetch an index: prefix (lowercased, length P) -> list[token_ids].
+
+    Uses the unigram first-word index to group token ids by the first-word prefix of
+    length `prefix_len`.
+    """
+    if prefix_len <= 0:
+        return {}
+    key = (id(tokenizer), vocab_size, int(prefix_len))
+    with _lock:
+        cached = _unigram_prefix_index_by_tok.get(key)
+        if cached is not None:
+            return cached
+
+    idx = get_unigram_first_word_index(tokenizer, vocab_size, quote_chars)
+    prefix_map: Dict[str, List[int]] = {}
+    for word, ids in idx.word_to_token_ids.items():
+        if not word:
+            continue
+        pref = word[:prefix_len]
+        lst = prefix_map.get(pref)
+        if lst is None:
+            prefix_map[pref] = list(ids)
+        else:
+            lst.extend(ids)
+
+    # Deduplicate and sort for stability
+    for pref, lst in prefix_map.items():
+        # unique while preserving ints
+        uniq = sorted(set(int(x) for x in lst))
+        prefix_map[pref] = uniq
+
+    with _lock:
+        _unigram_prefix_index_by_tok[key] = prefix_map
+    return prefix_map

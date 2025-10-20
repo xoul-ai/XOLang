@@ -56,6 +56,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.hard_at_all_starts: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.bool, device=device
         )
+        # Optional: apply prefix-neighbor hard block at starts
+        self.hard_prefix_at_starts: torch.Tensor = torch.zeros(
+            (len(reqs),), dtype=torch.bool, device=device
+        )
         self.bias_vals: torch.Tensor = torch.zeros(
             (len(reqs),), dtype=torch.float32, device=device
         )
@@ -68,6 +72,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
         self.first_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
         self.full_prefixes: List[Optional[List[List[int]]]] = [None] * len(reqs)
+        # Optional neighbor-prefix ids
+        self.prefix_first_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
 
         # Track whether the NEXT position is a sentence/reply start for each request.
         # Initialized to True to treat BOS as a start position.
@@ -83,11 +89,15 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             hard_bos = bool(cp.get("ban_user_unigram_hard_at_bos", True))
             hard_all = bool(cp.get("ban_user_unigram_hard_at_all_starts", False))
             bias = float(cp.get("ban_user_unigram_bias", -0.9) or -0.9)
+            prefix_len = int(cp.get("ban_user_unigram_prefix_len", 0) or 0)
+            hard_prefix = bool(cp.get("ban_user_unigram_hard_prefix_at_starts", True))
 
             self.guard_window[i] = window
             self.hard_at_bos[i] = hard_bos
             self.hard_at_all_starts[i] = hard_all
             self.bias_vals[i] = bias
+            # Only enable hard_prefix if prefix_len > 0
+            self.hard_prefix_at_starts[i] = bool(hard_prefix and prefix_len > 0)
 
             # Proceed to surface encoding if tokenizer is available
 
@@ -225,6 +235,37 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 self.first_token_ids[i] = None
                 self.full_prefixes[i] = None
 
+            # Build optional neighbor-prefix first-token IDs at starts
+            if prefix_len > 0 and tokenizer is not None and matches:
+                try:
+                    vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
+                    if vocab_size > 0:
+                        pref_index = get_unigram_prefix_index(
+                            tokenizer, vocab_size, self._OPENING_QUOTES, prefix_len
+                        )
+                        banned_words: Set[str] = set()
+                        for orig in matches:
+                            low = orig.lower()
+                            if low and (low not in STOPWORDS):
+                                banned_words.add(low)
+                        prefixes_set: Set[str] = set(
+                            w[:prefix_len] for w in banned_words if len(w) >= prefix_len
+                        )
+                        pref_ids: Set[int] = set()
+                        for pref in prefixes_set:
+                            ids = pref_index.get(pref)
+                            if ids:
+                                for tid in ids:
+                                    pref_ids.add(int(tid))
+                        if pref_ids:
+                            self.prefix_first_token_ids[i] = torch.tensor(
+                                sorted(pref_ids), dtype=torch.int64, device=device
+                            )
+                        else:
+                            self.prefix_first_token_ids[i] = None
+                except Exception:
+                    self.prefix_first_token_ids[i] = None
+
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
             return
@@ -263,9 +304,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         guard_window = self.guard_window
         hard_at_bos = self.hard_at_bos
         hard_at_all_starts = self.hard_at_all_starts
+        hard_prefix_at_starts = self.hard_prefix_at_starts
         bias_vals = self.bias_vals
         generated_counts = self.generated_counts
         first_token_ids = self.first_token_ids
+        prefix_first_token_ids = self.prefix_first_token_ids
         last_hard_blocks = self._last_hard_blocks
 
         next_pos_is_start = self.next_pos_is_start
@@ -280,6 +323,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             or len(bias_vals) != B
             or len(generated_counts) != B
             or len(first_token_ids) != B
+            or len(prefix_first_token_ids) != B
             or len(last_hard_blocks) != B
             or next_pos_is_start.size(0) != B
         ):
@@ -304,11 +348,19 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
 
             if is_bos and bool(hard_at_bos[i].item()):
-                to_block[i] = first_ids
-                last_hard_blocks[i] = first_ids
+                pref_ids = prefix_first_token_ids[i]
+                if pref_ids is not None and bool(hard_prefix_at_starts[i].item()):
+                    to_block[i] = torch.unique(torch.cat([first_ids, pref_ids]))
+                else:
+                    to_block[i] = first_ids
+                last_hard_blocks[i] = to_block[i]
             elif (not is_bos) and bool(hard_at_all_starts[i].item()):
-                to_block[i] = first_ids
-                last_hard_blocks[i] = first_ids
+                pref_ids = prefix_first_token_ids[i]
+                if pref_ids is not None and bool(hard_prefix_at_starts[i].item()):
+                    to_block[i] = torch.unique(torch.cat([first_ids, pref_ids]))
+                else:
+                    to_block[i] = first_ids
+                last_hard_blocks[i] = to_block[i]
             else:
                 bias = float(bias_vals[i].item())
                 if bias != 0.0:
@@ -362,9 +414,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.guard_window = self.guard_window[keep]
         self.hard_at_bos = self.hard_at_bos[keep]
         self.hard_at_all_starts = self.hard_at_all_starts[keep]
+        self.hard_prefix_at_starts = self.hard_prefix_at_starts[keep]
         self.bias_vals = self.bias_vals[keep]
         self.generated_counts = self.generated_counts[keep]
         self.first_token_ids = [self.first_token_ids[j] for j in keep.tolist()]
+        self.prefix_first_token_ids = [
+            self.prefix_first_token_ids[j] for j in keep.tolist()
+        ]
         self.full_prefixes = [self.full_prefixes[j] for j in keep.tolist()]
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
         # Keep next_pos_is_start in sync with batch filtering
@@ -380,11 +436,15 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.hard_at_all_starts = torch.cat(
             [self.hard_at_all_starts, their.hard_at_all_starts], dim=0
         )
+        self.hard_prefix_at_starts = torch.cat(
+            [self.hard_prefix_at_starts, their.hard_prefix_at_starts], dim=0
+        )
         self.bias_vals = torch.cat([self.bias_vals, their.bias_vals], dim=0)
         self.generated_counts = torch.cat(
             [self.generated_counts, their.generated_counts], dim=0
         )
         self.first_token_ids.extend(their.first_token_ids)
+        self.prefix_first_token_ids.extend(their.prefix_first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
         self._last_hard_blocks.extend(their._last_hard_blocks)
         # Merge next_pos_is_start state
