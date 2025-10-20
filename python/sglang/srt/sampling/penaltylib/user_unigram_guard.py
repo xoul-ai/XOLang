@@ -314,33 +314,33 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 if bias != 0.0:
                     logits[i, first_ids] += bias
                     # Optional DEBUG: log top-k next tokens when soft bias is applied
-                    from sglang.srt.sampling.penaltylib.toggle import DEBUG
-                    if DEBUG:
-                        try:
-                            self._debug_log_topk_row(logits, i, req, tag="unigram-soft")
-                        except Exception:
-                            pass
+
+                    try:
+                        self._debug_log_topk_row(logits, i, req, tag="unigram-soft")
+                    except Exception:
+                        pass
 
         # Apply hard blocks in a batched op
         if any(x is not None for x in to_block):
             from sglang.srt.sampling.penaltylib.mask_utils import (
                 apply_blocked_ids_mask_inplace,
             )
+
             apply_blocked_ids_mask_inplace(logits, to_block, fill_value=-float("inf"))
             # Optional DEBUG: log top-k next tokens when hard block is applied
-            from sglang.srt.sampling.penaltylib.toggle import DEBUG
-            if DEBUG:
-                for i in range(B):
-                    if to_block[i] is not None:
-                        try:
-                            self._debug_log_topk_row(logits, i, reqs[i], tag="unigram-hard")
-                        except Exception:
-                            pass
+
+            for i in range(B):
+                if to_block[i] is not None:
+                    try:
+                        self._debug_log_topk_row(logits, i, reqs[i], tag="unigram-hard")
+                    except Exception:
+                        pass
         return logits
 
     def _debug_log_topk_row(self, logits: torch.Tensor, i: int, req, tag: str):
         """Log top-k tokens and their probabilities for row i (DEBUG only)."""
         import torch
+
         topk = min(10, logits.size(1))
         vals, idx = torch.topk(logits[i], topk)
         probs = torch.softmax(logits[i], dim=-1)[idx]
@@ -368,7 +368,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.full_prefixes = [self.full_prefixes[j] for j in keep.tolist()]
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
         # Keep next_pos_is_start in sync with batch filtering
-        if self.next_pos_is_start is not None and self.next_pos_is_start.size(0) >= keep.numel():
+        if (
+            self.next_pos_is_start is not None
+            and self.next_pos_is_start.size(0) >= keep.numel()
+        ):
             self.next_pos_is_start = self.next_pos_is_start[keep]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
