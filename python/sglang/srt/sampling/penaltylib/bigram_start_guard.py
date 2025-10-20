@@ -268,12 +268,13 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         for j in range(len(reqs)):
             last_hard_blocks[j] = None
         for i, req in enumerate(reqs):
-            # BOS: Hard block single-token candidates that decode to "the word..." (boundary-aware)
+            # BOS/start: Hard block single-token candidates that decode to "the word..." (boundary-aware)
             out_ids_list = getattr(req, "output_ids", []) or []
             rid = getattr(req, "rid", None)
             tok = getattr(req, "tokenizer", None)
 
-            if len(out_ids_list) == 0 and single_token_blacklist is not None:
+            is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
+            if is_start_here and single_token_blacklist is not None:
                 logits[i, single_token_blacklist] = -float("inf")
                 if (
                     single_token_blacklist is not None
@@ -369,9 +370,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             out_ids_list = getattr(req, "output_ids", []) or []
             rid = getattr(req, "rid", None)
 
-            # BOS: block any single-token that decodes to "the word..." if we have it
+            # BOS/start: block any single-token that decodes to "the word..." if we have it
+            is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
             if (
-                len(out_ids_list) == 0
+                is_start_here
                 and self.single_token_blacklist is not None
                 and self.single_token_blacklist.numel() > 0
             ):
