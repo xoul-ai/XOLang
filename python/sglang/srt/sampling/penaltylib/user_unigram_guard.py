@@ -69,6 +69,12 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_ids: List[Optional[torch.Tensor]] = [None] * len(reqs)
         self.full_prefixes: List[Optional[List[List[int]]]] = [None] * len(reqs)
 
+        # Track whether the NEXT position is a sentence/reply start for each request.
+        # Initialized to True to treat BOS as a start position.
+        self.next_pos_is_start: torch.Tensor = torch.ones(
+            (len(reqs),), dtype=torch.bool, device=device
+        )
+
         for i, req in enumerate(reqs):
             cp = getattr(req.sampling_params, "custom_params", None) or {}
             text = str(cp.get("unigrams_text", "") or "")
@@ -223,6 +229,26 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if output_ids is None or output_ids.numel() == 0:
             return
         self.generated_counts.add_(torch.ones_like(self.generated_counts))
+        # Update per-request next_pos_is_start using only the last emitted token
+        reqs = self.orchestrator.reqs()
+        if reqs is None:
+            return
+        for i, req in enumerate(reqs):
+            tok = getattr(req, "tokenizer", None)
+            last_id = int(output_ids[i].item())
+            if tok is not None:
+                try:
+                    s = tok.decode([last_id])
+                except Exception:
+                    s = ""
+                j = len(s) - 1
+                while j >= 0 and s[j].isspace():
+                    j -= 1
+                if j >= 0:
+                    ch = s[j]
+                    self.next_pos_is_start[i] = bool(
+                        (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
+                    )
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -253,6 +279,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Reset last hard-blocks
         for j in range(B):
             last_hard_blocks[j] = None
+        # Batch-collect rows needing hard blocks, and apply in one fused op
+        to_block: List[Optional[torch.Tensor]] = [None] * B
         for i in range(B):
             req = reqs[i]
             first_ids = first_token_ids[i]
@@ -261,24 +289,29 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             if int(generated_counts[i].item()) >= int(guard_window[i].item()):
                 continue
 
-            # 2) Determine whether we are at a start position (BOS or after quotes/punctuation)
             _out_ids = getattr(req, "output_ids", None) or []
             is_bos = len(_out_ids) == 0
-            is_start = True if is_bos else self._is_start_position(req)
+            is_start = True if is_bos else bool(self.next_pos_is_start[i].item())
             if not is_start:
                 continue
 
-            # 3) Hard block at BOS or any start (if enabled); otherwise apply soft bias
             if is_bos and bool(hard_at_bos[i].item()):
-                logits[i, first_ids] = -float("inf")
+                to_block[i] = first_ids
                 last_hard_blocks[i] = first_ids
             elif (not is_bos) and bool(hard_at_all_starts[i].item()):
-                logits[i, first_ids] = -float("inf")
+                to_block[i] = first_ids
                 last_hard_blocks[i] = first_ids
             else:
                 bias = float(bias_vals[i].item())
                 if bias != 0.0:
                     logits[i, first_ids] += bias
+
+        # Apply hard blocks in a batched op
+        if any(x is not None for x in to_block):
+            from sglang.srt.sampling.penaltylib.mask_utils import (
+                apply_blocked_ids_mask_inplace,
+            )
+            apply_blocked_ids_mask_inplace(logits, to_block, fill_value=-float("inf"))
         return logits
 
     def _filter(self, keep_indices: torch.Tensor):

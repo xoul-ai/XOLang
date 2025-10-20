@@ -199,33 +199,7 @@ class Sampler(nn.Module):
             logits[:] = torch.softmax(logits, dim=-1)
             probs = logits
 
-            # Belt-and-suspenders: zero out blocked ids on probs and renormalize
-            try:
-                hard = hard_now
-                if hard:
-                    # Zero masked indices in a batched op
-                    from sglang.srt.sampling.penaltylib.mask_utils import (
-                        apply_blocked_ids_mask_inplace,
-                    )
-                    apply_blocked_ids_mask_inplace(probs, hard, fill_value=0.0)
-                    # Renormalize each row to sum 1.0 (avoid div by zero)
-                    # Reuse row_sums buffer if possible
-                    B = probs.size(0)
-                    need_rowsums_alloc = (
-                        self._row_sums_buf is None
-                        or self._row_sums_buf.size(0) < B
-                    )
-                    if need_rowsums_alloc:
-                        self._row_sums_buf = torch.empty(
-                            (B, 1), device=probs.device, dtype=probs.dtype
-                        )
-                    row_sums = probs.sum(dim=-1, keepdim=True, out=self._row_sums_buf[:B, :1])
-                    zero_mask = row_sums.squeeze(-1) == 0
-                    if torch.any(~zero_mask):
-                        probs[~zero_mask] = probs[~zero_mask] / row_sums[~zero_mask]
-                    # If everything got zeroed (pathological), keep as-is
-            except Exception:
-                pass
+            # Note: hard-blocks are enforced on logits before softmax; no need to re-zero probs
             del logits
 
             if True:  # Keep this redundant check to simplify some internal code sync

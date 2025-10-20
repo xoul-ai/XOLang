@@ -290,14 +290,16 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             if first_ids_set2 and out_ids_list:
                 # We consider we are at start of sentence if out_len == 1 or if start-detect
                 # on the context BEFORE the last token is True
-                is_start_here = False
-                if len(out_ids_list) == 1:
-                    is_start_here = True
-                else:
-                    # Reuse start detection logic (relative to prefix)
-                    is_start_here = self._is_start_position_before_last(req)
                 last_id2 = int(out_ids_list[-1])
-                if is_start_here and (last_id2 in first_ids_set2):
+                if last_id2 in first_ids_set2:
+                    if len(out_ids_list) == 1:
+                        is_start_here = True
+                    else:
+                        # Reuse start detection logic (relative to prefix)
+                        is_start_here = self._is_start_position_before_last(req)
+                else:
+                    is_start_here = False
+                if is_start_here:
                     just_after_the = True
                     decoded_last = ""
                     if tok:
@@ -417,29 +419,31 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             )
 
             if first_ids_set2 and out_ids_list:
-                is_start_here = len(out_ids_list) == 1 or self._is_start_position_before_last(req)
+                last_id2 = int(out_ids_list[-1])
+                if last_id2 in first_ids_set2:
+                    is_start_here = (
+                        len(out_ids_list) == 1 or self._is_start_position_before_last(req)
+                    )
+                else:
+                    is_start_here = False
 
                 if is_start_here:
-                    last_id2 = int(out_ids_list[-1])
-                    is_match = last_id2 in first_ids_set2
+                    req_map2 = self.first_token_requires_space_per_req[i] or {}
+                    need_space_variant2 = bool(req_map2.get(last_id2, True))
 
-                    if is_match:
-                        req_map2 = self.first_token_requires_space_per_req[i] or {}
-                        need_space_variant2 = bool(req_map2.get(last_id2, True))
+                    if (
+                        need_space_variant2
+                        and self.word_with_space_ids is not None
+                        and self.word_with_space_ids.numel() > 0
+                    ):
+                        out[i] = self.word_with_space_ids
 
-                        if (
-                            need_space_variant2
-                            and self.word_with_space_ids is not None
-                            and self.word_with_space_ids.numel() > 0
-                        ):
-                            out[i] = self.word_with_space_ids
-
-                        elif (
-                            (not need_space_variant2)
-                            and self.word_no_space_ids is not None
-                            and self.word_no_space_ids.numel() > 0
-                        ):
-                            out[i] = self.word_no_space_ids
+                    elif (
+                        (not need_space_variant2)
+                        and self.word_no_space_ids is not None
+                        and self.word_no_space_ids.numel() > 0
+                    ):
+                        out[i] = self.word_no_space_ids
 
         # Final logging
         non_none_count = sum(1 for x in out if x is not None)
