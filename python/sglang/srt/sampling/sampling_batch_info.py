@@ -257,7 +257,9 @@ class SamplingBatchInfo:
         if self.logit_bias is not None:
             logits.add_(self.logit_bias)
 
-    def enforce_hard_blocks(self, logits: torch.Tensor, hard_ids: Optional[List[torch.Tensor]] = None):
+    def enforce_hard_blocks(
+        self, logits: torch.Tensor, hard_ids: Optional[List[torch.Tensor]] = None
+    ):
         """Reapply hard-blocks from penalizers just before sampling.
 
         This ensures any -inf masks set by unigram/bigram guards persist even if
@@ -283,6 +285,7 @@ class SamplingBatchInfo:
         from sglang.srt.sampling.penaltylib.mask_utils import (
             apply_blocked_ids_mask_inplace,
         )
+
         apply_blocked_ids_mask_inplace(logits, hard, fill_value=-float("inf"))
 
     def filter_batch(self, keep_indices: List[int], keep_indices_device: torch.Tensor):

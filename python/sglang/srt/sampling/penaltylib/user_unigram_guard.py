@@ -190,7 +190,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             try:
                 vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
                 if matches and tokenizer is not None and vocab_size > 0:
-                    index = get_unigram_first_word_index(tokenizer, vocab_size, self._OPENING_QUOTES)
+                    index = get_unigram_first_word_index(
+                        tokenizer, vocab_size, self._OPENING_QUOTES
+                    )
                     banned_words: Set[str] = set()
                     for orig in matches:
                         low = orig.lower()
@@ -236,11 +238,17 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
-        if (reqs is None or len(reqs) != B or
-            len(guard_window) != B or len(hard_at_bos) != B or
-            len(hard_at_all_starts) != B or len(bias_vals) != B or
-            len(generated_counts) != B or len(first_token_ids) != B or
-            len(last_hard_blocks) != B):
+        if (
+            reqs is None
+            or len(reqs) != B
+            or len(guard_window) != B
+            or len(hard_at_bos) != B
+            or len(hard_at_all_starts) != B
+            or len(bias_vals) != B
+            or len(generated_counts) != B
+            or len(first_token_ids) != B
+            or len(last_hard_blocks) != B
+        ):
             return logits
         # Reset last hard-blocks
         for j in range(B):
