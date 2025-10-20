@@ -81,5 +81,7 @@ def apply_blocked_ids_mask_inplace(
     # Apply dense rows with per-row boolean masks (few rows expected)
     for i, cols in zip(dense_rows, dense_cols):
         mask_row = torch.zeros((V,), device=device, dtype=torch.bool)
-        mask_row.index_put_((cols,), True)
+        mask_row.index_put_(
+            (cols,), torch.ones_like(cols, dtype=torch.bool, device=device)
+        )
         tensor[i].masked_fill_(mask_row, fill_value)
