@@ -10,28 +10,48 @@ from sglang.srt.sampling.penaltylib.orchestrator import (
 
 
 def _find_all_subsequence(haystack: List[int], needle: List[int]) -> List[int]:
-    if not needle:
+    """Find all start indices where `needle` occurs in `haystack` (exact match).
+
+    Implementation uses KMP for linear-time search with identical semantics to
+    the previous nested-loop version, but significantly lower CPU cost.
+    """
+    m = len(needle)
+    if m == 0:
         return []
-    n = len(needle)
-    lim = len(haystack) - n
-    if lim < 0:
+    n = len(haystack)
+    if m > n:
         return []
-    out: List[int] = []
-    first = needle[0]
-    i = 0
-    while i <= lim:
-        while i <= lim and haystack[i] != first:
+    # Build LPS (longest proper prefix which is also suffix) array for needle
+    lps = [0] * m
+    length = 0
+    i = 1
+    while i < m:
+        if needle[i] == needle[length]:
+            length += 1
+            lps[i] = length
             i += 1
-        if i > lim:
-            break
-        ok = True
-        for j in range(1, n):
-            if haystack[i + j] != needle[j]:
-                ok = False
-                break
-        if ok:
-            out.append(i)
-        i += 1
+        elif length != 0:
+            length = lps[length - 1]
+        else:
+            lps[i] = 0
+            i += 1
+
+    # Scan haystack
+    out: List[int] = []
+    i = 0  # index for haystack
+    j = 0  # index for needle
+    while i < n:
+        if haystack[i] == needle[j]:
+            i += 1
+            j += 1
+            if j == m:
+                out.append(i - j)
+                j = lps[j - 1]
+        else:
+            if j != 0:
+                j = lps[j - 1]
+            else:
+                i += 1
     return out
 
 
