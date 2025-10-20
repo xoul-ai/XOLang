@@ -233,7 +233,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         if reqs is None:
             return
-        for i, req in enumerate(reqs):
+        B = len(reqs)
+        # Guard against size mismatches (e.g., after filter/merge in scheduler)
+        if self.next_pos_is_start.size(0) != B:
+            return
+        step_B = min(B, int(output_ids.numel()))
+        for i in range(step_B):
+            req = reqs[i]
             tok = getattr(req, "tokenizer", None)
             last_id = int(output_ids[i].item())
             if tok is not None:
@@ -262,6 +268,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         first_token_ids = self.first_token_ids
         last_hard_blocks = self._last_hard_blocks
 
+        next_pos_is_start = self.next_pos_is_start
         reqs = self.orchestrator.reqs()
         # If reqs unavailable or batch size mismatch, skip
         if (
@@ -274,6 +281,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             or len(generated_counts) != B
             or len(first_token_ids) != B
             or len(last_hard_blocks) != B
+            or next_pos_is_start.size(0) != B
         ):
             return logits
         # Reset last hard-blocks
@@ -291,7 +299,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
 
             _out_ids = getattr(req, "output_ids", None) or []
             is_bos = len(_out_ids) == 0
-            is_start = True if is_bos else bool(self.next_pos_is_start[i].item())
+            is_start = True if is_bos else bool(next_pos_is_start[i].item())
             if not is_start:
                 continue
 
@@ -324,6 +332,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_ids = [self.first_token_ids[j] for j in keep.tolist()]
         self.full_prefixes = [self.full_prefixes[j] for j in keep.tolist()]
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
+        # Keep next_pos_is_start in sync with batch filtering
+        if self.next_pos_is_start is not None and self.next_pos_is_start.size(0) >= keep.numel():
+            self.next_pos_is_start = self.next_pos_is_start[keep]
 
     def _merge(self, their: "BatchedUserUnigramStartGuardPenalizer"):
         self.guard_window = torch.cat([self.guard_window, their.guard_window], dim=0)
@@ -338,6 +349,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         self.first_token_ids.extend(their.first_token_ids)
         self.full_prefixes.extend(their.full_prefixes)
         self._last_hard_blocks.extend(their._last_hard_blocks)
+        # Merge next_pos_is_start state
+        self.next_pos_is_start = torch.cat(
+            [self.next_pos_is_start, their.next_pos_is_start], dim=0
+        )
 
     def _is_start_position(self, req) -> bool:
         _out_ids = getattr(req, "output_ids", None) or []
