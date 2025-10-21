@@ -8,6 +8,8 @@ from typing import Set
 
 STOPWORDS: Set[str] = {
     # Core determiners/pronouns/auxiliaries
+    "no",
+    "yes",
     "a",
     "about",
     "above",
