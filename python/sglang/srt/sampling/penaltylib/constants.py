@@ -8,6 +8,12 @@ from typing import Set
 
 STOPWORDS: Set[str] = {
     # Core determiners/pronouns/auxiliaries
+    "gonna",
+    "wanna",
+    "finna",
+    "gotta",
+    "couldawoulda",
+    "shoulda",
     "no",
     "yes",
     "a",
@@ -307,16 +313,4 @@ QUOTE_CHARS = {
     "’",  # U+2019 Right single quotation mark
     "‚",  # U+201A Single low-9 quotation mark
     "‛",  # U+201B Single high-reversed-9 quotation mark
-    "«",  # U+00AB Left-pointing double angle quotation mark
-    "»",  # U+00BB Right-pointing double angle quotation mark
-    "‹",  # U+2039 Single left-pointing angle quotation mark
-    "›",  # U+203A Single right-pointing angle quotation mark
-    "「",  # U+300C Left corner bracket
-    "」",  # U+300D Right corner bracket
-    "『",  # U+300E Left white corner bracket
-    "』",  # U+300F Right white corner bracket
-    "〈",  # U+3008 Left angle bracket
-    "〉",  # U+3009 Right angle bracket
-    "《",  # U+300A Left double angle bracket
-    "》",  # U+300B Right double angle bracket
 }
