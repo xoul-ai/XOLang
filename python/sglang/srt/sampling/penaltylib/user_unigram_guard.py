@@ -19,6 +19,7 @@ from sglang.srt.sampling.penaltylib.constants import (
 )
 from sglang.srt.sampling.penaltylib.vocab_cache import (
     get_unigram_first_word_index,
+    get_unigram_prefix_index,
 )
 
 
@@ -99,7 +100,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # Only enable hard_prefix if prefix_len > 0
             self.hard_prefix_at_starts[i] = bool(hard_prefix and prefix_len > 0)
 
-            # Proceed to surface encoding if tokenizer is available
+            # Proceed only if tokenizer is available
 
             tokenizer = getattr(req, "tokenizer", None)
             if tokenizer is None:
@@ -109,100 +110,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             # Match words including contractions (e.g., "don't", "we're", "would've")
             matches = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text) if text else []
 
-            cap = 1500
-            seen: Set[str] = set()
-            words_with_variants: List[str] = []
-            for orig in matches:
-                low = orig.lower()
-                if low in STOPWORDS:
-                    continue
-                # add lower/title/original variants
-                for v in (low, orig.title(), orig):
-                    if v not in seen:
-                        seen.add(v)
-                        words_with_variants.append(v)
-                        if len(seen) >= cap:
-                            break
-                if len(seen) >= cap:
-                    break
-
+            # Use cached word->first-token-id index only to avoid
+            # over-including generic subword/prefix tokens from ad-hoc surface scans.
             first_ids: Set[int] = set()
-            prefixes: List[List[int]] = []
-
-            # Include common trailing punctuation and quote-like enders. This helps
-            # harvest first-token IDs in tokenizers that fuse trailing chars.
-            end_punct = [
-                ",",
-                ".",
-                "?",
-                "!",
-                ":",
-                ";",
-            ]
-            for w in words_with_variants:
-                # Build surfaces for plain word, space+word, and all quote-like
-                # prefixes with and without a leading space to mirror tokenizer contexts.
-                base_surfaces = [w, f" {w}"]
-                for q in self._OPENING_QUOTES:
-                    base_surfaces.append(f"{q}{w}")
-                    base_surfaces.append(f" {q}{w}")
-                surfaces = []
-                for s in base_surfaces:
-                    surfaces.append(s)
-                    for p in end_punct:
-                        surfaces.append(s + p)
-                for surface in surfaces:
-                    try:
-                        ids = tokenizer.encode(surface, add_special_tokens=False)
-                    except Exception:
-                        ids = []
-                    if not ids:
-                        continue
-                    first_idx = 0
-                    try:
-                        for j, tok in enumerate(ids):
-                            s = tokenizer.decode([tok])
-                            if re.search(r"[A-Za-z]", s):
-                                # Skip contraction fragments: tokens that are just apostrophe + short suffix
-                                # like 't, 's, 're, 'm, 'd, 'll, 've which are parts of contractions
-                                s_stripped = s.strip()
-                                # Check if it's a contraction fragment: starts with apostrophe/quote and has <=3 chars total
-                                is_contraction_fragment = (
-                                    len(s_stripped) <= 3
-                                    and len(s_stripped) > 0
-                                    and s_stripped[0] in ("'", '"', """, """, "`")
-                                )
-                                if is_contraction_fragment:
-                                    continue  # Skip this token, keep looking
-                                first_idx = j
-                                break
-                        tok_id = int(ids[first_idx])
-                        # Double-check: skip if it's a contraction fragment
-                        s_check = tokenizer.decode([tok_id]).strip()
-                        is_frag = (
-                            len(s_check) <= 3
-                            and len(s_check) > 0
-                            and s_check[0] in ("'", '"', """, """, "`")
-                        )
-                        if not is_frag:
-                            first_ids.add(tok_id)
-                            prefixes.append(ids[first_idx:])
-                    except Exception:
-                        # Also check exception path
-                        try:
-                            s_check = tokenizer.decode([int(ids[0])]).strip()
-                            is_frag = (
-                                len(s_check) <= 3
-                                and len(s_check) > 0
-                                and s_check[0] in ("'", '"', """, """, "`")
-                            )
-                            if not is_frag:
-                                first_ids.add(int(ids[0]))
-                                prefixes.append(ids)
-                        except:
-                            pass
-
-            # Augment via cached index of first-word -> token ids
             try:
                 vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
                 if matches and tokenizer is not None and vocab_size > 0:
@@ -217,23 +127,19 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     for w in banned_words:
                         ids = index.word_to_token_ids.get(w)
                         if ids:
-                            # extend first_ids with these ids
                             for tid in ids:
                                 first_ids.add(int(tid))
             except Exception:
-                # proceed with current set if index build fails for any reason
                 pass
-
-            # Remove heavy diagnostic decode loops; keep minimal state only
 
             if first_ids:
                 self.first_token_ids[i] = torch.tensor(
                     sorted(first_ids), dtype=torch.int64, device=device
                 )
-                self.full_prefixes[i] = prefixes
             else:
                 self.first_token_ids[i] = None
-                self.full_prefixes[i] = None
+            # Keep API parity; we no longer build per-word prefixes here
+            self.full_prefixes[i] = None
 
             # Build optional neighbor-prefix first-token IDs at starts
             if prefix_len > 0 and tokenizer is not None and matches:
@@ -362,15 +268,11 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                     to_block[i] = first_ids
                 last_hard_blocks[i] = to_block[i]
             else:
-                bias = float(bias_vals[i].item())
-                if bias != 0.0:
-                    logits[i, first_ids] += bias
-                    # Optional DEBUG: log top-k next tokens when soft bias is applied
-
-                    try:
-                        self._debug_log_topk_row(logits, i, req, tag="unigram-soft")
-                    except Exception:
-                        pass
+                # Do not apply soft bias at non-start positions; applying it globally
+                # caused broad suppression mid-sentence and unnatural detours.
+                # If softer behavior is desired, disable hard_* and rely on soft bias
+                # at start positions only.
+                pass
 
         # Apply hard blocks in a batched op
         if any(x is not None for x in to_block):
