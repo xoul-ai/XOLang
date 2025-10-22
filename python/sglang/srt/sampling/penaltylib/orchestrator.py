@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import logging
 import weakref
 from typing import TYPE_CHECKING, Optional, Set, Type
 
@@ -8,6 +9,8 @@ import torch
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import ScheduleBatch
+
+logger = logging.getLogger(__name__)
 
 
 class BatchedPenalizerOrchestrator:
@@ -21,12 +24,27 @@ class BatchedPenalizerOrchestrator:
         self._batch_ref = weakref.ref(batch)
         self.device = batch.device
         self.penalizers = {Penalizer: Penalizer(self) for Penalizer in penalizers}
+        self._backup_reqs = None
+        self._backup_reqs_len = 0
 
         is_required = False
         for penalizer in self.penalizers.values():
             pen_is_required = penalizer.prepare_if_required()
             is_required |= pen_is_required
         self.is_required = is_required
+
+    def __getstate__(self):
+        # For pickling: convert weakref to None since batch won't survive pickling
+        # The batch reference is only needed during initialization
+        state = self.__dict__.copy()
+        state['_batch_ref'] = None
+        return state
+
+    def __setstate__(self, state):
+        # For unpickling: restore with a dead weakref
+        self.__dict__.update(state)
+        if self._batch_ref is None:
+            self._batch_ref = lambda: None
 
     @property
     def batch(self) -> ScheduleBatch | None:
@@ -40,7 +58,21 @@ class BatchedPenalizerOrchestrator:
             self._batch_ref = weakref.ref(value)
 
     def reqs(self):
-        return self.batch.reqs
+        # Prefer backup_reqs if it's been set (more up-to-date after merge/filter)
+        if self._backup_reqs is not None:
+            return self._backup_reqs
+
+        # Fallback to batch.reqs if backup not set
+        batch = self.batch
+        if batch is not None:
+            return batch.reqs
+
+        return None
+
+    def set_backup_reqs(self, reqs):
+        """Set fallback reqs list for worker thread usage (when weakref is dead)."""
+        self._backup_reqs = reqs
+        self._backup_reqs_len = len(reqs) if reqs else 0
 
     def cumulate_output_tokens(self, output_ids: torch.Tensor):
         """
@@ -64,7 +96,8 @@ class BatchedPenalizerOrchestrator:
             torch.Tensor: The logits after applying the penalizers.
         """
         for penalizer in self.penalizers.values():
-            penalizer.apply(logits)
+            logits = penalizer.apply(logits)
+        return logits
 
     def filter(self, keep_indices: torch.Tensor):
         """
@@ -110,6 +143,80 @@ class BatchedPenalizerOrchestrator:
         for penalizer, their_penalizer in their.penalizers.items():
             self.penalizers[penalizer].merge(their_penalizer)
 
+    def get_hard_block_ids(self):
+        """Collect per-request hard-block token IDs from penalizers.
+
+        Returns a list of Optional[torch.Tensor] of length batch_size. Each
+        entry is a 1-D tensor of token ids that should be hard-blocked for the
+        corresponding request; None or empty tensor means no hard block.
+        """
+        if not self.is_required:
+            return None
+        reqs = self.reqs()
+        if not reqs:
+            return None
+        # Accumulate all per-penalizer ids first, then unique once per row
+        accum: list = [[] for _ in range(len(reqs))]
+        for pen in self.penalizers.values():
+            lst = pen.get_last_hard_block_ids()
+            if not lst:
+                continue
+            for i, ids in enumerate(lst):
+                if ids is None:
+                    continue
+                accum[i].append(ids)
+
+        merged: list = [None] * len(reqs)
+        for i, parts in enumerate(accum):
+            if not parts:
+                continue
+            if len(parts) == 1:
+                merged[i] = parts[0]
+            else:
+                merged[i] = torch.unique(torch.cat(parts))
+        return merged
+
+    def get_hard_block_ids_now(self):
+        """Compute per-request hard-block token IDs for the current step.
+
+        This asks each penalizer to compute the to-be-blocked ids directly from
+        the current request state (BOS/start detection etc.), avoiding reliance
+        on whether `_apply` has already run on this rank.
+        If a penalizer does not support compute-now, falls back to last ids.
+        """
+        if not self.is_required:
+            return None
+        reqs = self.reqs()
+        if not reqs:
+            return None
+
+        # Accumulate all per-penalizer ids first (compute-now preferred),
+        # then unique once per row
+        accum: list = [[] for _ in range(len(reqs))]
+        for pen in self.penalizers.values():
+            try:
+                lst = pen.get_computed_hard_block_ids()
+            except Exception:
+                lst = None
+            if lst is None or not any(x is not None for x in lst):
+                lst = pen.get_last_hard_block_ids()
+            if lst is None or not lst:
+                continue
+            for i, ids in enumerate(lst):
+                if ids is None:
+                    continue
+                accum[i].append(ids)
+
+        merged: list = [None] * len(reqs)
+        for i, parts in enumerate(accum):
+            if not parts:
+                continue
+            if len(parts) == 1:
+                merged[i] = parts[0]
+            else:
+                merged[i] = torch.unique(torch.cat(parts))
+        return merged
+
 
 class _BatchedPenalizer(abc.ABC):
     """
@@ -145,9 +252,10 @@ class _BatchedPenalizer(abc.ABC):
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if not self._is_prepared:
-            return
+            return logits
 
         self._apply(logits=logits)
+        return logits
 
     def filter(self, keep_indices: torch.Tensor):
         if not self._is_prepared:
@@ -162,6 +270,14 @@ class _BatchedPenalizer(abc.ABC):
         self.prepare()
         their.prepare()
         self._merge(their)
+
+    # Optional: penalizers can expose the ids they hard-blocked at last _apply
+    def get_last_hard_block_ids(self):
+        return None
+
+    # Optional: compute hard-block ids based on current request state
+    def get_computed_hard_block_ids(self):
+        return None
 
     @abc.abstractmethod
     def _is_required(self) -> bool:

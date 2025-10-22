@@ -886,9 +886,9 @@ class ModelRunner:
         weights/parameters online, and broadcasts them to the inference
         engine through the `_model_update_group` process group.
         """
-        assert (
-            torch.distributed.is_initialized()
-        ), "Default torch process group must be initialized"
+        assert torch.distributed.is_initialized(), (
+            "Default torch process group must be initialized"
+        )
         assert group_name != "", "Group name cannot be empty"
 
         rank = rank_offset + self.tp_rank
@@ -1694,9 +1694,9 @@ class ModelRunner:
 
             return DualChunkFlashAttentionBackend(self)
         elif backend_str == "hybrid_linear_attn":
-            assert (
-                self.is_hybrid_gdn
-            ), "hybrid_linear_attn backend can only be used with hybrid GDN models."
+            assert self.is_hybrid_gdn, (
+                "hybrid_linear_attn backend can only be used with hybrid GDN models."
+            )
             from sglang.srt.layers.attention.flashattention_backend import (
                 FlashAttentionBackend,
             )
@@ -1986,6 +1986,11 @@ class ModelRunner:
             # Normal mode: Put CPU-heavy tasks here. They will be overlapped with the forward pass.
             sampling_info.update_regex_vocab_mask()
         sampling_info.apply_logits_bias(logits_output.next_token_logits)
+        # Enforce hard blocks early as well to reduce timing windows
+        try:
+            sampling_info.enforce_hard_blocks(logits_output.next_token_logits)
+        except Exception:
+            pass
 
     def sample(
         self,
@@ -2018,6 +2023,7 @@ class ModelRunner:
             forward_batch.top_logprobs_nums,
             forward_batch.token_ids_logprobs,
         )
+
         return next_token_ids
 
     @property

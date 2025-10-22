@@ -472,9 +472,9 @@ class Scheduler(
             self.tree_cache,
             self.enable_hierarchical_cache,
         )
-        assert (
-            server_args.schedule_conservativeness >= 0
-        ), "Invalid schedule_conservativeness"
+        assert server_args.schedule_conservativeness >= 0, (
+            "Invalid schedule_conservativeness"
+        )
         self.init_new_token_ratio = min(
             global_config.default_init_new_token_ratio
             * server_args.schedule_conservativeness,
@@ -645,9 +645,9 @@ class Scheduler(
                     self.tree_cache.cache_controller.layer_done_counter
                 )
             elif self.is_hybrid:
-                assert (
-                    self.server_args.disaggregation_mode == "null"
-                ), "Hybrid mode does not support disaggregation yet"
+                assert self.server_args.disaggregation_mode == "null", (
+                    "Hybrid mode does not support disaggregation yet"
+                )
                 self.tree_cache = SWARadixCache(
                     req_to_token_pool=self.req_to_token_pool,
                     token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -656,12 +656,12 @@ class Scheduler(
                     disable=server_args.disable_radix_cache,
                 )
             elif self.enable_lora:
-                assert (
-                    not self.enable_hierarchical_cache
-                ), "LoRA radix cache doesn't support hierarchical cache"
-                assert (
-                    self.schedule_policy == "fcfs"
-                ), "LoRA radix cache only supports FCFS policy"
+                assert not self.enable_hierarchical_cache, (
+                    "LoRA radix cache doesn't support hierarchical cache"
+                )
+                assert self.schedule_policy == "fcfs", (
+                    "LoRA radix cache only supports FCFS policy"
+                )
                 self.tree_cache = LoRARadixCache(
                     req_to_token_pool=self.req_to_token_pool,
                     token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -1441,13 +1441,12 @@ class Scheduler(
                 # self.max_total_num_tokens
                 # if not self.enable_hierarchical_cache
                 # else self.max_total_num_tokens - protected_size
-                self.max_total_num_tokens
-                - protected_size
+                self.max_total_num_tokens - protected_size
             )
             token_msg = f"{self.max_total_num_tokens=}, {available_size=}, {evictable_size=}, {protected_size=}\n"
 
         if memory_leak:
-            msg = "token_to_kv_pool_allocator memory leak detected! " f"{token_msg}"
+            msg = f"token_to_kv_pool_allocator memory leak detected! {token_msg}"
             raise ValueError(msg)
 
         if self.disaggregation_mode == DisaggregationMode.DECODE:
@@ -1651,7 +1650,6 @@ class Scheduler(
 
         # Get requests from the waiting queue to a new prefill batch
         for req in self.waiting_queue:
-
             if self.enable_lora and not self.tp_worker.can_run_lora_batch(
                 lora_set
                 | set([req.lora_id for req in adder.can_run_list])
@@ -2139,11 +2137,9 @@ class Scheduler(
                 )
             else:
                 _, _, available_size, evictable_size = self._get_token_info()
-                info_msg = f"{available_size=}, " f"{evictable_size=}, "
+                info_msg = f"{available_size=}, {evictable_size=}, "
             logger.error(
-                f"{self.cur_batch.batch_size()=}, "
-                f"{self.cur_batch.reqs=}, "
-                f"{info_msg}"
+                f"{self.cur_batch.batch_size()=}, {self.cur_batch.reqs=}, {info_msg}"
             )
 
         pyspy_dump_schedulers()

@@ -1,78 +1,280 @@
-<div align="center" id="sglangtop">
-<img src="https://raw.githubusercontent.com/sgl-project/sglang/main/assets/logo.png" alt="logo" width="400" margin="10px"></img>
+# XOLang
 
-[![PyPI](https://img.shields.io/pypi/v/sglang)](https://pypi.org/project/sglang)
-![PyPI - Downloads](https://static.pepy.tech/badge/sglang?period=month)
-[![license](https://img.shields.io/github/license/sgl-project/sglang.svg)](https://github.com/sgl-project/sglang/tree/main/LICENSE)
-[![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
-[![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang)
+## Installation
 
-</div>
+### System Setup
 
---------------------------------------------------------------------------------
+```bash
+sudo apt update
+sudo apt install python3-venv -y
+python3 -m venv xolangenv
+source xolangenv/bin/activate
+```
 
-| [**Blog**](https://lmsys.org/blog/2025-05-05-large-scale-ep/)
-| [**Documentation**](https://docs.sglang.ai/)
-| [**Join Slack**](https://slack.sglang.ai/)
-| [**Join Bi-Weekly Development Meeting**](https://meeting.sglang.ai/)
-| [**Roadmap**](https://github.com/sgl-project/sglang/issues/7736)
-| [**Slides**](https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#slides) |
+### Clone and Install
 
-## News
-- [2025/08] 🔔 SGLang x AMD SF Meetup on 8/22: Hands-on GPU workshop, tech talks by AMD/xAI/SGLang, and networking ([Roadmap](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_roadmap.pdf), [Large-scale EP](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_ep.pdf), [Highlights](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_highlights.pdf), [AITER/MoRI](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_aiter_mori.pdf), [Wave](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_wave.pdf)).
-- [2025/08] 🔥 SGLang provides day-0 support for OpenAI gpt-oss model ([instructions](https://github.com/sgl-project/sglang/issues/8833))
-- [2025/06] 🔥 SGLang, the high-performance serving infrastructure powering trillions of tokens daily, has been awarded the third batch of the Open Source AI Grant by a16z ([a16z blog](https://a16z.com/advancing-open-source-ai-through-benchmarks-and-bold-experimentation/)).
-- [2025/06] 🔥 Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part I): 2.7x Higher Decoding Throughput ([blog](https://lmsys.org/blog/2025-06-16-gb200-part-1/)).
-- [2025/05] 🔥 Deploying DeepSeek with PD Disaggregation and Large-scale Expert Parallelism on 96 H100 GPUs ([blog](https://lmsys.org/blog/2025-05-05-large-scale-ep/)).
-- [2025/03] Supercharge DeepSeek-R1 Inference on AMD Instinct MI300X ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1-Part2/README.html))
-- [2025/03] SGLang Joins PyTorch Ecosystem: Efficient LLM Serving Engine ([PyTorch blog](https://pytorch.org/blog/sglang-joins-pytorch/))
-- [2024/12] v0.4 Release: Zero-Overhead Batch Scheduler, Cache-Aware Load Balancer, Faster Structured Outputs ([blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/)).
+```bash
+git clone https://github.com/xoul-ai/XOLang
+cd XOLang
+git checkout prod
 
-<details>
-<summary>More</summary>
+pip install --upgrade pip
+pip install -e "python[all]"
+pip uninstall -y pynvml  # Remove warning
+```
 
-- [2025/02] Unlock DeepSeek-R1 Inference Performance on AMD Instinct™ MI300X GPU ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1_Perf/README.html))
-- [2025/01] SGLang provides day one support for DeepSeek V3/R1 models on NVIDIA and AMD GPUs with DeepSeek-specific optimizations. ([instructions](https://github.com/sgl-project/sglang/tree/main/benchmark/deepseek_v3), [AMD blog](https://www.amd.com/en/developer/resources/technical-articles/amd-instinct-gpus-power-deepseek-v3-revolutionizing-ai-development-with-sglang.html), [10+ other companies](https://x.com/lmsysorg/status/1887262321636221412))
-- [2024/10] The First SGLang Online Meetup ([slides](https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#the-first-sglang-online-meetup)).
-- [2024/09] v0.3 Release: 7x Faster DeepSeek MLA, 1.5x Faster torch.compile, Multi-Image/Video LLaVA-OneVision ([blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/)).
-- [2024/07] v0.2 Release: Faster Llama3 Serving with SGLang Runtime (vs. TensorRT-LLM, vLLM) ([blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/)).
-- [2024/02] SGLang enables **3x faster JSON decoding** with compressed finite state machine ([blog](https://lmsys.org/blog/2024-02-05-compressed-fsm/)).
-- [2024/01] SGLang provides up to **5x faster inference** with RadixAttention ([blog](https://lmsys.org/blog/2024-01-17-sglang/)).
-- [2024/01] SGLang powers the serving of the official **LLaVA v1.6** release demo ([usage](https://github.com/haotian-liu/LLaVA?tab=readme-ov-file#demo)).
+### Python 3.12 Additional Requirements
 
-</details>
+If you're using Python 3.12, install the development headers:
 
-## About
-SGLang is a fast serving framework for large language models and vision language models.
-It makes your interaction with models faster and more controllable by co-designing the backend runtime and frontend language.
-The core features include:
+```bash
+sudo apt install -y build-essential python3.12-dev
+```
 
-- **Fast Backend Runtime**: Provides efficient serving with RadixAttention for prefix caching, zero-overhead CPU scheduler, prefill-decode disaggregation, speculative decoding, continuous batching, paged attention, tensor/pipeline/expert/data parallelism, structured outputs, chunked prefill, quantization (FP4/FP8/INT4/AWQ/GPTQ), and multi-lora batching.
-- **Flexible Frontend Language**: Offers an intuitive interface for programming LLM applications, including chained generation calls, advanced prompting, control flow, multi-modal inputs, parallelism, and external interactions.
-- **Extensive Model Support**: Supports a wide range of generative models (Llama, Qwen, DeepSeek, Kimi, GPT, Gemma, Mistral, etc.), embedding models (e5-mistral, gte, mcdse) and reward models (Skywork), with easy extensibility for integrating new models.
-- **Active Community**: SGLang is open-source and backed by an active community with wide industry adoption.
+## Running the Server
 
-## Getting Started
-- [Install SGLang](https://docs.sglang.ai/get_started/install.html)
-- [Quick Start](https://docs.sglang.ai/basic_usage/send_request.html)
-- [Backend Tutorial](https://docs.sglang.ai/basic_usage/openai_api_completions.html)
-- [Frontend Tutorial](https://docs.sglang.ai/references/frontend/frontend_tutorial.html)
-- [Contribution Guide](https://docs.sglang.ai/developer_guide/contribution_guide.html)
+```bash
+source xolangenv/bin/activate
+export TORCH_CUDA_ARCH_LIST="90"
 
-## Benchmark and Performance
-Learn more in the release blogs: [v0.2 blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/), [v0.3 blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/), [v0.4 blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/), [Large-scale expert parallelism](https://lmsys.org/blog/2025-05-05-large-scale-ep/).
+nohup python3 -m sglang.launch_server \
+  --model-path {model_name} \
+  --tensor-parallel 8 \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --schedule-conservativeness 0.24 \
+  --context-length 32768 \
+  --mem-fraction-static 0.9 \
+  --kv-cache-dtype fp8_e4m3 \
+  --attention-backend fa3 \
+  --decode-attention-backend fa3 \
+  --prefill-attention-backend fa3 \
+  --disable-shared-experts-fusion \
+  --enable-bigram-start-guard-the-word \
+  --enable-metrics \
+  > nohup.out &
+```
 
-## Roadmap
-[Development Roadmap (2025 H2)](https://github.com/sgl-project/sglang/issues/7736)
+## Optional: Performance Tuning
 
-## Adoption and Sponsorship
-SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, AMD, NVIDIA, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, InnoMatrix, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Jam & Tea Studios, Baseten, and other major technology organizations across North America and Asia. As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 1,000,000 GPUs worldwide.
+For optimal performance, you can tune the fused MoE kernels:
 
-<img src="https://raw.githubusercontent.com/sgl-project/sgl-learning-materials/refs/heads/main/slides/adoption.png" alt="logo" width="800" margin="10px"></img>
+```bash
+pip install "ray[default]"==2.34.0
+cd /home/user/XOLang/benchmark/kernels/fused_moe_triton
+python3 tuning_fused_moe_triton.py --model {model_name} --tp-size 8 --dtype fp8_w8a8 --tune
+```
 
-## Contact Us
-For enterprises interested in adopting or deploying SGLang at scale, including technical consulting, sponsorship opportunities, or partnership inquiries, please contact us at contact@sglang.ai.
+## SGLang Health Monitor and Auto-Restart Script
 
-## Acknowledgment
-We learned the design and reused code from the following projects: [Guidance](https://github.com/guidance-ai/guidance), [vLLM](https://github.com/vllm-project/vllm), [LightLLM](https://github.com/ModelTC/lightllm), [FlashInfer](https://github.com/flashinfer-ai/flashinfer), [Outlines](https://github.com/outlines-dev/outlines), and [LMQL](https://github.com/eth-sri/lmql).
+This script monitors the SGLang engine and automatically restarts it if it fails.
+
+### Usage
+
+**Run in foreground:**
+```bash
+./monitor.sh
+```
+
+**Run as daemon:**
+```bash
+./monitor.sh --daemon
+```
+
+### Script
+
+Create a file named `monitor.sh` with the following content:
+
+```bash
+#!/bin/bash
+
+# Configuration
+MODEL_NAME="{model_name}"
+SGLANG_HOST="0.0.0.0"
+SGLANG_PORT="8000"
+HEALTH_CHECK_URL="http://${SGLANG_HOST}:${SGLANG_PORT}/health"
+SERVER_INFO_URL="http://${SGLANG_HOST}:${SGLANG_PORT}/get_server_info"
+CHECK_INTERVAL=30
+MAX_RETRIES=3      # Number of failed checks before restart
+RETRY_COUNT=0
+LOG_DIR="$HOME/sglang_logs"
+MONITOR_LOG="$LOG_DIR/monitor.log"
+
+mkdir -p "$LOG_DIR"
+
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$MONITOR_LOG"
+}
+
+check_health() {
+    response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$HEALTH_CHECK_URL" 2>/dev/null)
+
+    if [ "$response" = "200" ]; then
+        # Also verify the server can actually respond to info requests
+        info_response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$SERVER_INFO_URL" 2>/dev/null)
+        if [ "$info_response" = "200" ]; then
+            return 0
+        else
+            log_message "WARNING: Health check passed but server info failed (HTTP $info_response)"
+            return 1
+        fi
+    else
+        log_message "Health check failed (HTTP $response)"
+        return 1
+    fi
+}
+
+kill_sglang_processes() {
+    log_message "Killing existing sglang processes..."
+
+    pkill -9 -f sglang
+    sleep 3
+
+    port_pid=$(lsof -ti:$SGLANG_PORT 2>/dev/null)
+    if [ -n "$port_pid" ]; then
+        log_message "Killing process using port $SGLANG_PORT: $port_pid"
+        kill -9 "$port_pid" 2>/dev/null
+        sleep 2
+    fi
+}
+
+start_sglang() {
+    log_message "Starting sglang engine..."
+
+    LOG_FILE="$LOG_DIR/sglang_$(date +%Y%m%d_%H%M%S).log"
+
+    nohup python3 -m sglang.launch_server \
+        --model-path $MODEL_NAME \
+        --tensor-parallel 8 \
+        --host $SGLANG_HOST \
+        --port $SGLANG_PORT \
+        --schedule-conservativeness 0.24 \
+        --context-length 32768 \
+        --mem-fraction-static 0.95 \
+        --kv-cache-dtype fp8_e4m3 \
+        --enable-metrics \
+        > "$LOG_FILE" 2>&1 &
+
+    local sglang_pid=$!
+    disown $sglang_pid
+
+    log_message "Started sglang with PID $sglang_pid"
+    log_message "Logs: $LOG_FILE"
+
+    log_message "Waiting for sglang to be ready (this may take several minutes for model loading)..."
+    local wait_count=0
+    local max_wait=600  # Wait up to 10 minutes for startup
+
+    while [ $wait_count -lt $max_wait ]; do
+        if check_health; then
+            log_message "sglang is ready and healthy!"
+            return 0
+        fi
+
+        # Check if process is still running
+        if ! kill -0 $sglang_pid 2>/dev/null; then
+            log_message "ERROR: sglang process died during startup"
+            log_message "Check logs at: $LOG_FILE"
+            tail -n 50 "$LOG_FILE" >> "$MONITOR_LOG"
+            return 1
+        fi
+
+        sleep 5
+        wait_count=$((wait_count + 5))
+
+        if [ $((wait_count % 30)) -eq 0 ]; then
+            log_message "Still waiting for sglang to start... ($wait_count seconds elapsed)"
+        fi
+    done
+
+    log_message "ERROR: sglang failed to start within $max_wait seconds"
+    return 1
+}
+
+restart_sglang() {
+    log_message "Initiating sglang restart..."
+
+    kill_sglang_processes
+
+    if start_sglang; then
+        log_message "sglang restarted successfully"
+        RETRY_COUNT=0
+        return 0
+    else
+        log_message "ERROR: Failed to restart sglang"
+        return 1
+    fi
+}
+
+main() {
+    log_message "Starting sglang monitor (PID: $$)"
+    log_message "Health check URL: $HEALTH_CHECK_URL"
+    log_message "Check interval: ${CHECK_INTERVAL}s"
+    log_message "Max retries before restart: $MAX_RETRIES"
+
+    if check_health; then
+        log_message "sglang is already running and healthy"
+    else
+        log_message "sglang is not running, starting it..."
+        if ! start_sglang; then
+            log_message "ERROR: Failed to start sglang on monitor startup"
+            exit 1
+        fi
+    fi
+
+    while true; do
+        sleep $CHECK_INTERVAL
+
+        if check_health; then
+            if [ $RETRY_COUNT -gt 0 ]; then
+                log_message "sglang recovered, resetting retry count"
+                RETRY_COUNT=0
+            fi
+        else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            log_message "Health check failed ($RETRY_COUNT/$MAX_RETRIES)"
+
+            if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                log_message "Max retries reached, restarting sglang..."
+                if ! restart_sglang; then
+                    log_message "ERROR: Restart failed, will retry in next cycle"
+                fi
+            fi
+        fi
+    done
+}
+
+trap 'log_message "Monitor received shutdown signal"; exit 0' SIGTERM SIGINT
+
+if [ "$1" = "--daemon" ]; then
+    log_message "Starting monitor in daemon mode..."
+    nohup "$0" > /dev/null 2>&1 &
+    echo "Monitor started in background with PID: $!"
+    echo "Logs: $MONITOR_LOG"
+else
+    main
+fi
+```
+
+Make the script executable:
+
+```bash
+chmod +x monitor.sh
+```
+
+### Monitor Features
+
+- **Health Monitoring**: Checks both `/health` and `/get_server_info` endpoints every 30 seconds
+- **Auto-Restart**: Automatically restarts SGLang after 3 consecutive failed health checks
+- **Logging**: All events logged to `~/sglang_logs/monitor.log`
+- **Daemon Mode**: Can run in background with `--daemon` flag
+- **Graceful Shutdown**: Handles SIGTERM and SIGINT signals properly
+
+### Configuration
+
+Edit the configuration variables at the top of the script:
+
+- `MODEL_NAME`: Path to your model
+- `SGLANG_PORT`: Server port (default: 8000)
+- `CHECK_INTERVAL`: Seconds between health checks (default: 30)
+- `MAX_RETRIES`: Failed checks before restart (default: 3)
