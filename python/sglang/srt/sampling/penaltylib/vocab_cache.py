@@ -33,8 +33,8 @@ class _UnigramIndex:
         self.word_to_token_ids = word_to_token_ids
 
 
-_bigram_cache_by_tok: Dict[int, _BigramCache] = {}
-_unigram_index_by_tok: Dict[int, _UnigramIndex] = {}
+_bigram_cache_by_tok: Dict[tuple, _BigramCache] = {}
+_unigram_index_by_tok: Dict[tuple, _UnigramIndex] = {}
 _unigram_prefix_index_by_tok: Dict[tuple, Dict[str, List[int]]] = {}
 
 
@@ -67,10 +67,12 @@ def get_bigram_cache(tokenizer, vocab_size: int, quote_chars: Set[str]) -> _Bigr
 
     Returns CPU lists/sets of token IDs; callers can move to device as needed.
     """
-    key = id(tokenizer)
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
     with _lock:
         cached = _bigram_cache_by_tok.get(key)
-        if cached is not None and cached.vocab_size == vocab_size:
+        if cached is not None:
             return cached
 
     # Build cache
@@ -132,10 +134,12 @@ def get_unigram_first_word_index(
     starts with that word (case-insensitive), after stripping leading spaces/quotes,
     and with a word boundary immediately after the word.
     """
-    key = id(tokenizer)
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
     with _lock:
         cached = _unigram_index_by_tok.get(key)
-        if cached is not None and cached.vocab_size == vocab_size:
+        if cached is not None:
             return cached
 
     word_to_token_ids: Dict[str, List[int]] = {}
@@ -184,7 +188,9 @@ def get_unigram_prefix_index(
     """
     if prefix_len <= 0:
         return {}
-    key = (id(tokenizer), vocab_size, int(prefix_len))
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__, int(prefix_len))
     with _lock:
         cached = _unigram_prefix_index_by_tok.get(key)
         if cached is not None:

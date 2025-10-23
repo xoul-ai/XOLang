@@ -72,7 +72,8 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             mult = float(cp.get("dry_multiplier", 0.0) or 0.0)
             base = float(cp.get("dry_base", 1.1) or 1.1)
             allow = int(cp.get("dry_allowed_length", 0) or 0)
-            stride = int(cp.get("dry_stride", 1) or 1)
+            # PERFORMANCE FIX: Increase default stride to reduce computation frequency
+            stride = int(cp.get("dry_stride", 4) or 4)
 
             brk_ids = cp.get("dry_sequence_breakers_ids", None)
             if brk_ids is None:
@@ -166,12 +167,12 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                     continue
 
             # 3) Search longest repeating suffix length (> allow), capped to a window
-            # Allow overriding cap via custom params; default 32 for perf
+            # PERFORMANCE FIX: Reduce default search window to limit computation
             cp = getattr(req.sampling_params, "custom_params", None) or {}
             try:
-                max_cap = int(cp.get("dry_max_search", 32) or 32)
+                max_cap = int(cp.get("dry_max_search", 16) or 16)
             except Exception:
-                max_cap = 32
+                max_cap = 16
             max_search = min(len(hist) - 1, max_cap)
             if max_search <= allow:
                 continue

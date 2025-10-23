@@ -83,6 +83,21 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             (len(reqs),), dtype=torch.bool
         )
 
+        # Pre-compute sentence-ending token IDs to avoid decode() in hot path
+        self.sentence_end_token_ids: Optional[Set[int]] = None
+        tokenizer0 = None
+        for r in reqs:
+            tok = getattr(r, "tokenizer", None)
+            if tok is not None:
+                tokenizer0 = tok
+                break
+        if tokenizer0 is not None:
+            vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
+            if vocab_size > 0:
+                self.sentence_end_token_ids = self._build_sentence_end_tokens(
+                    tokenizer0, vocab_size
+                )
+
         for i, req in enumerate(reqs):
             cp = getattr(req.sampling_params, "custom_params", None) or {}
             text = str(cp.get("unigrams_text", "") or "")
@@ -126,16 +141,10 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
 
-            # Include common trailing punctuation and quote-like enders. This helps
-            # harvest first-token IDs in tokenizers that fuse trailing chars.
-            end_punct = [
-                ",",
-                ".",
-                "?",
-                "!",
-                ":",
-                ";",
-            ]
+            # PERFORMANCE FIX: Reduce surface variants - vocab cache covers most cases
+            # Only include the 3 most common trailing punctuation marks
+            end_punct = [",", ".", "?"]
+
             for w in words_with_variants:
                 # Build surfaces for plain word, space+word, and all quote-like
                 # prefixes with and without a leading space to mirror tokenizer contexts.
@@ -261,6 +270,29 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 except Exception:
                     self.prefix_first_token_ids[i] = None
 
+    def _build_sentence_end_tokens(self, tokenizer, vocab_size: int) -> Set[int]:
+        """Pre-compute token IDs that end with sentence-ending or quote characters.
+
+        This eliminates the need for decode() calls in the hot path (_cumulate_output_tokens).
+        """
+        end_ids: Set[int] = set()
+        for tid in range(vocab_size):
+            try:
+                s = tokenizer.decode([tid])
+            except Exception:
+                continue
+            if not s:
+                continue
+            # Check last non-whitespace character
+            j = len(s) - 1
+            while j >= 0 and s[j].isspace():
+                j -= 1
+            if j >= 0:
+                ch = s[j]
+                if ch in QUOTE_CHARS or ch in SENTENCE_END_CHARS:
+                    end_ids.add(tid)
+        return end_ids
+
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
             return
@@ -276,21 +308,26 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         step_B = min(B, int(output_ids.numel()))
         for i in range(step_B):
             req = reqs[i]
-            tok = getattr(req, "tokenizer", None)
             last_id = int(output_ids[i].item())
-            if tok is not None:
-                try:
-                    s = tok.decode([last_id])
-                except Exception:
-                    s = ""
-                j = len(s) - 1
-                while j >= 0 and s[j].isspace():
-                    j -= 1
-                if j >= 0:
-                    ch = s[j]
-                    self.next_pos_is_start[i] = bool(
-                        (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
-                    )
+            # PERFORMANCE FIX: Use pre-computed set instead of decode()
+            if self.sentence_end_token_ids is not None:
+                self.next_pos_is_start[i] = (last_id in self.sentence_end_token_ids)
+            else:
+                # Fallback to decode if cache not available (shouldn't happen)
+                tok = getattr(req, "tokenizer", None)
+                if tok is not None:
+                    try:
+                        s = tok.decode([last_id])
+                    except Exception:
+                        s = ""
+                    j = len(s) - 1
+                    while j >= 0 and s[j].isspace():
+                        j -= 1
+                    if j >= 0:
+                        ch = s[j]
+                        self.next_pos_is_start[i] = bool(
+                            (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
+                        )
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape

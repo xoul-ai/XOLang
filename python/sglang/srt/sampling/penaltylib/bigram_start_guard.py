@@ -119,6 +119,36 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.prev_pos_is_start = torch.ones((len(reqs),), dtype=torch.bool)
         self.next_pos_is_start = torch.ones((len(reqs),), dtype=torch.bool)
 
+        # Pre-compute sentence-ending token IDs to avoid decode() in hot path
+        self.sentence_end_token_ids: Optional[Set[int]] = None
+        if tokenizer0 is not None:
+            self.sentence_end_token_ids = self._build_sentence_end_tokens(
+                tokenizer0, vocab_size
+            )
+
+    def _build_sentence_end_tokens(self, tokenizer, vocab_size: int) -> Set[int]:
+        """Pre-compute token IDs that end with sentence-ending or quote characters.
+
+        This eliminates the need for decode() calls in the hot path (_cumulate_output_tokens).
+        """
+        end_ids: Set[int] = set()
+        for tid in range(vocab_size):
+            try:
+                s = tokenizer.decode([tid])
+            except Exception:
+                continue
+            if not s:
+                continue
+            # Check last non-whitespace character
+            j = len(s) - 1
+            while j >= 0 and s[j].isspace():
+                j -= 1
+            if j >= 0:
+                ch = s[j]
+                if ch in QUOTE_CHARS or ch in SENTENCE_END_CHARS:
+                    end_ids.add(tid)
+        return end_ids
+
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
             return
@@ -158,22 +188,28 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     if i < len(self.next_pos_is_start)
                     else torch.tensor(False)
                 )
-            tok = getattr(req, "tokenizer", None)
-            if tok is not None and i < len(self.next_pos_is_start):
-                try:
-                    s = tok.decode([last_id])
-                except Exception:
-                    s = ""
-                j = len(s) - 1
-                while j >= 0 and s[j].isspace():
-                    j -= 1
-                if j >= 0:
-                    ch = s[j]
-                    self.next_pos_is_start[i] = bool(
-                        (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
-                    )
+            # PERFORMANCE FIX: Use pre-computed set instead of decode()
+            if i < len(self.next_pos_is_start):
+                if self.sentence_end_token_ids is not None:
+                    self.next_pos_is_start[i] = (last_id in self.sentence_end_token_ids)
                 else:
-                    self.next_pos_is_start[i] = False
+                    # Fallback to decode if cache not available (shouldn't happen)
+                    tok = getattr(req, "tokenizer", None)
+                    if tok is not None:
+                        try:
+                            s = tok.decode([last_id])
+                        except Exception:
+                            s = ""
+                        j = len(s) - 1
+                        while j >= 0 and s[j].isspace():
+                            j -= 1
+                        if j >= 0:
+                            ch = s[j]
+                            self.next_pos_is_start[i] = bool(
+                                (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
+                            )
+                        else:
+                            self.next_pos_is_start[i] = False
 
             first_ids_set = first_token_ids_set_per_req[i]
             if not first_ids_set:
