@@ -108,6 +108,8 @@ GLOBAL_SERVER_ARGS_KEYS = [
     "quantization",
     "enable_custom_logit_processor",
     "disaggregation_mode",
+    # Penalizer-related server flags
+    "enable_bigram_start_guard_the_word",
 ]
 
 # Put some global args for easy access

@@ -2059,6 +2059,7 @@ class ServerArgs:
             action="store_false",
             help="Disable guard that prevents starting a sentence/reply with the phrase 'The word'.",
         )
+        # (No global DRY penalizer flags; DRY is controlled per-request via custom_params.)
         parser.add_argument(
             "--flashinfer-mla-disable-ragged",
             action="store_true",
