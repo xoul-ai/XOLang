@@ -18,6 +18,7 @@ from sglang.srt.sampling.penaltylib.constants import (
 from sglang.srt.sampling.penaltylib.vocab_cache import (
     get_unigram_first_word_index,
     get_unigram_prefix_index,
+    get_sentence_end_token_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             (len(reqs),), dtype=torch.bool
         )
 
-        # Pre-compute sentence-ending token IDs to avoid decode() in hot path
+        # PERFORMANCE: Use cached sentence-ending token IDs (built once per vocab)
         self.sentence_end_token_ids: Optional[Set[int]] = None
         tokenizer0 = None
         for r in reqs:
@@ -94,8 +95,8 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if tokenizer0 is not None:
             vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
             if vocab_size > 0:
-                self.sentence_end_token_ids = self._build_sentence_end_tokens(
-                    tokenizer0, vocab_size
+                self.sentence_end_token_ids = get_sentence_end_token_ids(
+                    tokenizer0, vocab_size, QUOTE_CHARS, SENTENCE_END_CHARS
                 )
 
         for i, req in enumerate(reqs):
@@ -269,29 +270,6 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                             self.prefix_first_token_ids[i] = None
                 except Exception:
                     self.prefix_first_token_ids[i] = None
-
-    def _build_sentence_end_tokens(self, tokenizer, vocab_size: int) -> Set[int]:
-        """Pre-compute token IDs that end with sentence-ending or quote characters.
-
-        This eliminates the need for decode() calls in the hot path (_cumulate_output_tokens).
-        """
-        end_ids: Set[int] = set()
-        for tid in range(vocab_size):
-            try:
-                s = tokenizer.decode([tid])
-            except Exception:
-                continue
-            if not s:
-                continue
-            # Check last non-whitespace character
-            j = len(s) - 1
-            while j >= 0 and s[j].isspace():
-                j -= 1
-            if j >= 0:
-                ch = s[j]
-                if ch in QUOTE_CHARS or ch in SENTENCE_END_CHARS:
-                    end_ids.add(tid)
-        return end_ids
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:

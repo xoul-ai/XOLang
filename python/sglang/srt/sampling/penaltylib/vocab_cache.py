@@ -36,6 +36,7 @@ class _UnigramIndex:
 _bigram_cache_by_tok: Dict[tuple, _BigramCache] = {}
 _unigram_index_by_tok: Dict[tuple, _UnigramIndex] = {}
 _unigram_prefix_index_by_tok: Dict[tuple, Dict[str, List[int]]] = {}
+_sentence_end_token_ids_cache: Dict[tuple, Set[int]] = {}
 
 
 _SP_SPACE = "\u2581"
@@ -217,3 +218,42 @@ def get_unigram_prefix_index(
     with _lock:
         _unigram_prefix_index_by_tok[key] = prefix_map
     return prefix_map
+
+
+def get_sentence_end_token_ids(
+    tokenizer, vocab_size: int, quote_chars: Set[str], sentence_end_chars: Set[str]
+) -> Set[int]:
+    """Build or fetch cached set of token IDs that end with sentence-ending or quote chars.
+
+    Returns a set of token IDs where the decoded token ends with a sentence-ending
+    character (after stripping trailing whitespace). This is used to detect sentence
+    boundaries without calling decode() in hot paths.
+    """
+    # PERFORMANCE: Cache by vocab_size and tokenizer class to avoid rebuilding
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
+    with _lock:
+        cached = _sentence_end_token_ids_cache.get(key)
+        if cached is not None:
+            return cached
+
+    # Build cache: scan vocab once
+    end_ids: Set[int] = set()
+    for tid in range(vocab_size):
+        try:
+            s = tokenizer.decode([tid])
+        except Exception:
+            continue
+        if not s:
+            continue
+        # Check last non-whitespace character
+        j = len(s) - 1
+        while j >= 0 and s[j].isspace():
+            j -= 1
+        if j >= 0:
+            ch = s[j]
+            if ch in quote_chars or ch in sentence_end_chars:
+                end_ids.add(tid)
+
+    with _lock:
+        _sentence_end_token_ids_cache[key] = end_ids
+    return end_ids
