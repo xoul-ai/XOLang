@@ -64,6 +64,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         multipliers: List[float] = []
         bases: List[float] = []
         allowed_lengths: List[int] = []
+        strides: List[int] = []
         breakers_ids: List[Optional[List[List[int]]]] = []
 
         for req in reqs:
@@ -71,6 +72,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             mult = float(cp.get("dry_multiplier", 0.0) or 0.0)
             base = float(cp.get("dry_base", 1.1) or 1.1)
             allow = int(cp.get("dry_allowed_length", 0) or 0)
+            stride = int(cp.get("dry_stride", 1) or 1)
 
             brk_ids = cp.get("dry_sequence_breakers_ids", None)
             if brk_ids is None:
@@ -89,6 +91,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             multipliers.append(mult)
             bases.append(base)
             allowed_lengths.append(allow)
+            strides.append(max(1, stride))
             breakers_ids.append(brk_ids if isinstance(brk_ids, list) else None)
 
         # Keep control-state on CPU to avoid GPU<->CPU sync on .item() access
@@ -99,10 +102,21 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.dry_allowed_length = torch.tensor(
             allowed_lengths, dtype=torch.int32
         ).unsqueeze(1)
+        self.dry_stride = torch.tensor(strides, dtype=torch.int32).unsqueeze(1)
+        # Per-request token counters (CPU)
+        self._gen_counts = torch.zeros((len(reqs),), dtype=torch.int32)
         self.breakers = breakers_ids
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
-        return
+        if output_ids is None or output_ids.numel() == 0:
+            return
+        reqs = self.orchestrator.reqs()
+        if reqs is None:
+            return
+        L = min(len(reqs), int(output_ids.numel()), int(self._gen_counts.numel()))
+        if L <= 0:
+            return
+        self._gen_counts[:L] += 1
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -110,6 +124,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         dry_multiplier = self.dry_multiplier
         dry_base = self.dry_base
         dry_allowed_length = self.dry_allowed_length
+        dry_stride = self.dry_stride
         breakers = self.breakers
 
         reqs = self.orchestrator.reqs()
@@ -123,8 +138,15 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 continue
             base = float(dry_base[i].item())
             allow = int(dry_allowed_length[i].item())
+            stride = int(dry_stride[i].item()) if i < len(dry_stride) else 1
             brks = breakers[i]
             req = reqs[i]
+
+            # Decimate: run every `stride` tokens for this request
+            if i < int(self._gen_counts.numel()):
+                cnt = int(self._gen_counts[i].item())
+                if stride > 1 and (cnt % stride) != 0:
+                    continue
 
             # 1) Build token history (origin + output so far)
             hist = (req.origin_input_ids or []) + (req.output_ids or [])
@@ -218,6 +240,10 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.dry_multiplier = self.dry_multiplier[keep]
         self.dry_base = self.dry_base[keep]
         self.dry_allowed_length = self.dry_allowed_length[keep]
+        if hasattr(self, "dry_stride"):
+            self.dry_stride = self.dry_stride[keep]
+        if hasattr(self, "_gen_counts") and self._gen_counts.numel() >= keep.numel():
+            self._gen_counts = self._gen_counts[keep.squeeze(-1) if keep.dim() > 1 else keep]
         self.breakers = [self.breakers[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):
@@ -228,4 +254,8 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.dry_allowed_length = torch.cat(
             [self.dry_allowed_length, their.dry_allowed_length], dim=0
         )
+        if hasattr(self, "dry_stride") and hasattr(their, "dry_stride"):
+            self.dry_stride = torch.cat([self.dry_stride, their.dry_stride], dim=0)
+        if hasattr(self, "_gen_counts") and hasattr(their, "_gen_counts"):
+            self._gen_counts = torch.cat([self._gen_counts, their._gen_counts], dim=0)
         self.breakers.extend(their.breakers)

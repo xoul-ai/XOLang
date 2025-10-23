@@ -115,6 +115,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.suffix_variant_space = torch.zeros((len(reqs),), dtype=torch.bool)
         self.suffix_progress = torch.zeros((len(reqs),), dtype=torch.int32)
         self._last_hard_blocks: List[Optional[torch.Tensor]] = [None] * len(reqs)
+        # Track start-of-sentence flags (CPU). Initialize BOS as start.
+        self.prev_pos_is_start = torch.ones((len(reqs),), dtype=torch.bool)
+        self.next_pos_is_start = torch.ones((len(reqs),), dtype=torch.bool)
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
@@ -136,41 +139,80 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         )
         if L == 0:
             return
+        # Take local views to reduce risk if self.* mutate during iteration
+        active_after_the = self.active_after_the
+        pending_after_the_at_start = self.pending_after_the_at_start
+        suffix_variant_space = self.suffix_variant_space
+        suffix_progress = self.suffix_progress
+        first_token_ids_set_per_req = self.first_token_ids_set_per_req
+        first_token_requires_space_per_req = self.first_token_requires_space_per_req
+
         for i in range(L):
             req = reqs[i]
             last_id = int(output_ids[i].item())
 
-            first_ids_set = self.first_token_ids_set_per_req[i]
+            # Update sentence-start flags using only the last emitted token
+            if i < len(self.prev_pos_is_start):
+                self.prev_pos_is_start[i] = (
+                    self.next_pos_is_start[i]
+                    if i < len(self.next_pos_is_start)
+                    else torch.tensor(False)
+                )
+            tok = getattr(req, "tokenizer", None)
+            if tok is not None and i < len(self.next_pos_is_start):
+                try:
+                    s = tok.decode([last_id])
+                except Exception:
+                    s = ""
+                j = len(s) - 1
+                while j >= 0 and s[j].isspace():
+                    j -= 1
+                if j >= 0:
+                    ch = s[j]
+                    self.next_pos_is_start[i] = bool(
+                        (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
+                    )
+                else:
+                    self.next_pos_is_start[i] = False
+
+            first_ids_set = first_token_ids_set_per_req[i]
             if not first_ids_set:
                 continue
-            if not self._is_start_position_before_last(req):
+            if not (i < len(self.prev_pos_is_start) and bool(self.prev_pos_is_start[i].item())):
                 continue
             if last_id in first_ids_set:
-                self.pending_after_the_at_start[i] = True
-                self.active_after_the[i] = True
+                if i < len(pending_after_the_at_start):
+                    pending_after_the_at_start[i] = True
+                if i < len(active_after_the):
+                    active_after_the[i] = True
                 # Determine whether next token needs space based on how "The" was encoded
-                req_map = self.first_token_requires_space_per_req[i] or {}
+                req_map = first_token_requires_space_per_req[i] or {}
                 need_space_variant = bool(req_map.get(last_id, True))
-                self.suffix_variant_space[i] = need_space_variant
-                self.suffix_progress[i] = 0
+                if i < len(suffix_variant_space):
+                    suffix_variant_space[i] = need_space_variant
+                if i < len(suffix_progress):
+                    suffix_progress[i] = 0
 
             # Advance FSM for multi-step suffix matching
-            if bool(self.active_after_the[i].item()):
-                if not bool(self.pending_after_the_at_start[i].item()):
+            if i < len(active_after_the) and bool(active_after_the[i].item()):
+                if not (i < len(pending_after_the_at_start) and bool(pending_after_the_at_start[i].item())):
                     seq = (
                         self.suffix_seq_space
-                        if bool(self.suffix_variant_space[i].item())
+                        if (i < len(suffix_variant_space) and bool(suffix_variant_space[i].item()))
                         else self.suffix_seq_nospace
                     )
                     if seq is None or len(seq) == 0:
-                        self.active_after_the[i] = False
+                        if i < len(active_after_the):
+                            active_after_the[i] = False
                     else:
-                        prog = int(self.suffix_progress[i].item())
+                        prog = int(suffix_progress[i].item()) if i < len(suffix_progress) else 0
                         if prog < len(seq):
                             if last_id == int(seq[prog]):
-                                self.suffix_progress[i] = prog + 1
+                                if i < len(suffix_progress):
+                                    suffix_progress[i] = prog + 1
                             else:
-                                self.active_after_the[i] = False
+                                if i < len(active_after_the):
+                                    active_after_the[i] = False
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B = logits.shape[0]
@@ -209,7 +251,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             req = reqs[i]
             out_ids_list = getattr(req, "output_ids", []) or []
 
-            is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
+            is_start_here = (len(out_ids_list) == 0) or (
+                i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
+            )
             if is_start_here and single_token_blacklist is not None:
                 logits[i, single_token_blacklist] = -float("inf")
                 if single_token_blacklist is not None and single_token_blacklist.numel() > 0:
@@ -220,23 +264,28 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             if first_ids_set2 and out_ids_list:
                 last_id2 = int(out_ids_list[-1])
                 if last_id2 in first_ids_set2:
-                    if len(out_ids_list) == 1:
-                        is_start_here = True
-                    else:
-                        is_start_here = self._is_start_position_before_last(req)
+                    is_start_here = (len(out_ids_list) == 1) or (
+                        i < len(self.prev_pos_is_start)
+                        and bool(self.prev_pos_is_start[i].item())
+                    )
                 else:
                     is_start_here = False
                 if is_start_here:
                     just_after_the = True
-                    if not bool(active_after_the[i].item()):
-                        self.active_after_the[i] = True
+                    # Use local views and guard against races that can shrink buffers
+                    if i < len(active_after_the) and not bool(active_after_the[i].item()):
+                        active_after_the[i] = True
                         req_map2 = first_token_requires_space_per_req[i] or {}
                         need_space_variant2 = bool(req_map2.get(last_id2, True))
-                        self.suffix_variant_space[i] = need_space_variant2
-                        self.suffix_progress[i] = 0
+                        if i < len(suffix_variant_space):
+                            suffix_variant_space[i] = need_space_variant2
+                        if i < len(suffix_progress):
+                            suffix_progress[i] = 0
 
-            if pending_after_the_at_start[i] or just_after_the:
-                need_space_variant = bool(suffix_variant_space[i].item())
+            if (i < len(pending_after_the_at_start) and pending_after_the_at_start[i]) or just_after_the:
+                need_space_variant = (
+                    bool(suffix_variant_space[i].item()) if i < len(suffix_variant_space) else False
+                )
                 if need_space_variant and word_with_space_ids is not None:
                     logits[i, word_with_space_ids] = -float("inf")
                     if word_with_space_ids is not None and word_with_space_ids.numel() > 0:
@@ -246,14 +295,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     if word_no_space_ids is not None and word_no_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_no_space_ids
 
-            if bool(active_after_the[i].item()):
+            if i < len(active_after_the) and bool(active_after_the[i].item()):
                 seq = (
                     suffix_seq_space
-                    if bool(suffix_variant_space[i].item())
+                    if (i < len(suffix_variant_space) and bool(suffix_variant_space[i].item()))
                     else suffix_seq_nospace
                 )
                 if seq and len(seq) >= 2:
-                    prog = int(suffix_progress[i].item())
+                    prog = int(suffix_progress[i].item()) if i < len(suffix_progress) else 0
                     if prog == len(seq) - 1:
                         next_tid = int(seq[prog])
                         logits[i, next_tid] = -float("inf")
@@ -281,12 +330,16 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             len(self.pending_after_the_at_start),
             len(self.suffix_variant_space),
             len(self.first_token_ids_set_per_req),
+            len(self.prev_pos_is_start),
+            len(self.next_pos_is_start),
         )
         for i in range(L):
             req = reqs[i]
             out_ids_list = getattr(req, "output_ids", []) or []
 
-            is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
+            is_start_here = (len(out_ids_list) == 0) or (
+                i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
+            )
             if (
                 is_start_here
                 and self.single_token_blacklist is not None
@@ -325,8 +378,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             if first_ids_set2 and out_ids_list:
                 last_id2 = int(out_ids_list[-1])
                 if last_id2 in first_ids_set2:
-                    is_start_here = (
-                        len(out_ids_list) == 1 or self._is_start_position_before_last(req)
+                    is_start_here = (len(out_ids_list) == 1) or (
+                        i < len(self.prev_pos_is_start)
+                        and bool(self.prev_pos_is_start[i].item())
                     )
                 else:
                     is_start_here = False
@@ -366,6 +420,11 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.active_after_the = self.active_after_the[keep]
         self.suffix_variant_space = self.suffix_variant_space[keep]
         self.suffix_progress = self.suffix_progress[keep]
+        # Keep start flags in sync
+        if hasattr(self, "prev_pos_is_start") and self.prev_pos_is_start.numel() >= keep.numel():
+            self.prev_pos_is_start = self.prev_pos_is_start[keep]
+        if hasattr(self, "next_pos_is_start") and self.next_pos_is_start.numel() >= keep.numel():
+            self.next_pos_is_start = self.next_pos_is_start[keep]
         self._last_hard_blocks = [self._last_hard_blocks[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedFixedBigramStartGuardPenalizer"):
@@ -387,6 +446,15 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self.suffix_progress = torch.cat(
             [self.suffix_progress, their.suffix_progress], dim=0
         )
+        # Merge start flags
+        if hasattr(self, "prev_pos_is_start") and hasattr(their, "prev_pos_is_start"):
+            self.prev_pos_is_start = torch.cat(
+                [self.prev_pos_is_start, their.prev_pos_is_start], dim=0
+            )
+        if hasattr(self, "next_pos_is_start") and hasattr(their, "next_pos_is_start"):
+            self.next_pos_is_start = torch.cat(
+                [self.next_pos_is_start, their.next_pos_is_start], dim=0
+            )
         self._last_hard_blocks.extend(their._last_hard_blocks)
 
         # Global sets should be equivalent; prefer keeping ours if both exist
