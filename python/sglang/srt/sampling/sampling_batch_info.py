@@ -373,13 +373,6 @@ class SamplingBatchInfo:
         return merged_dict
 
     def merge_batch(self, other: "SamplingBatchInfo"):
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        logger.info(
-            f"merge_batch: merging orchestrators, self.orch_id={id(self.penalizer_orchestrator)}, other.orch_id={id(other.penalizer_orchestrator)}"
-        )
         self.penalizer_orchestrator.merge(other.penalizer_orchestrator)
 
         # Merge penalizer_reqs to match the merged batch
