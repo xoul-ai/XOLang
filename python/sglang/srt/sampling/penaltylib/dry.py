@@ -91,14 +91,13 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             allowed_lengths.append(allow)
             breakers_ids.append(brk_ids if isinstance(brk_ids, list) else None)
 
+        # Keep control-state on CPU to avoid GPU<->CPU sync on .item() access
         self.dry_multiplier = torch.tensor(
-            multipliers, dtype=torch.float32, device=device
+            multipliers, dtype=torch.float32
         ).unsqueeze(1)
-        self.dry_base = torch.tensor(
-            bases, dtype=torch.float32, device=device
-        ).unsqueeze(1)
+        self.dry_base = torch.tensor(bases, dtype=torch.float32).unsqueeze(1)
         self.dry_allowed_length = torch.tensor(
-            allowed_lengths, dtype=torch.int32, device=device
+            allowed_lengths, dtype=torch.int32
         ).unsqueeze(1)
         self.breakers = breakers_ids
 
@@ -145,7 +144,13 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                     continue
 
             # 3) Search longest repeating suffix length (> allow), capped to a window
-            max_search = min(len(hist) - 1, 128)
+            # Allow overriding cap via custom params; default 32 for perf
+            cp = getattr(req.sampling_params, "custom_params", None) or {}
+            try:
+                max_cap = int(cp.get("dry_max_search", 32) or 32)
+            except Exception:
+                max_cap = 32
+            max_search = min(len(hist) - 1, max_cap)
             if max_search <= allow:
                 continue
 
@@ -193,20 +198,26 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 continue
 
             # 5) Apply a positive penalty => subtract log(1 + penalty) from those candidate logits
+            # Batch the update per row to minimize kernel launches and Python loops
             pen = mult * (base**best_k)
-            try:
-                if pen > 0.0:
-                    delta = math.log1p(pen)
-                    for token_id in set(candidates):
-                        if 0 <= token_id < V:
-                            logits[i, token_id] -= float(delta)
-            except Exception:
-                pass
+            if pen > 0.0 and candidates:
+                try:
+                    delta = float(math.log1p(pen))
+                    uniq_ids = sorted(set(t for t in candidates if 0 <= t < V))
+                    if uniq_ids:
+                        col_idx = torch.tensor(
+                            uniq_ids, dtype=torch.long, device=logits.device
+                        )
+                        # Single fused in-place update for this row
+                        logits[i, col_idx] -= delta
+                except Exception:
+                    pass
 
     def _filter(self, keep_indices: torch.Tensor):
-        self.dry_multiplier = self.dry_multiplier[keep_indices]
-        self.dry_base = self.dry_base[keep_indices]
-        self.dry_allowed_length = self.dry_allowed_length[keep_indices]
+        keep = keep_indices.cpu()
+        self.dry_multiplier = self.dry_multiplier[keep]
+        self.dry_base = self.dry_base[keep]
+        self.dry_allowed_length = self.dry_allowed_length[keep]
         self.breakers = [self.breakers[j] for j in keep_indices.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):

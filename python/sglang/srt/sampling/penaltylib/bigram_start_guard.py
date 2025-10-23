@@ -43,8 +43,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         vocab_size = self.orchestrator.vocab_size
 
         # Per-request state tracking whether next token is immediately after "The" at a start
+        # Keep per-request FSM/control state on CPU to avoid GPU syncs
         self.pending_after_the_at_start = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
 
         self.first_token_ids_per_req: List[Optional[torch.Tensor]] = [None] * len(reqs)
@@ -110,15 +111,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     self.first_token_requires_space_per_req[i] = None
 
         # FSM state for tracking multi-step suffix matching (after "The" token)
-        self.active_after_the = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
-        )
-        self.suffix_variant_space = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
-        )
-        self.suffix_progress = torch.zeros(
-            (len(reqs),), dtype=torch.int32, device=device
-        )
+        self.active_after_the = torch.zeros((len(reqs),), dtype=torch.bool)
+        self.suffix_variant_space = torch.zeros((len(reqs),), dtype=torch.bool)
+        self.suffix_progress = torch.zeros((len(reqs),), dtype=torch.int32)
         self._last_hard_blocks: List[Optional[torch.Tensor]] = [None] * len(reqs)
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
@@ -334,7 +329,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         return out
 
     def _filter(self, keep_indices: torch.Tensor):
-        keep = keep_indices
+        keep = keep_indices.cpu()
         self.pending_after_the_at_start = self.pending_after_the_at_start[keep]
         self.first_token_ids_per_req = [
             self.first_token_ids_per_req[j] for j in keep.tolist()

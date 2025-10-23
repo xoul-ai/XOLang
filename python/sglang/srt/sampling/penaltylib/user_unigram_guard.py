@@ -48,24 +48,25 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         device = self.orchestrator.device
 
+        # Keep control state on CPU to avoid GPU sync in Python control flow
         self.guard_window: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.int32, device=device
+            (len(reqs),), dtype=torch.int32
         )
         self.hard_at_bos: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         self.hard_at_all_starts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         # Optional: apply prefix-neighbor hard block at starts
         self.hard_prefix_at_starts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         self.bias_vals: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.float32, device=device
+            (len(reqs),), dtype=torch.float32
         )
         self.generated_counts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.int32, device=device
+            (len(reqs),), dtype=torch.int32
         )
 
         # Track hard blocks applied at last step per request (list of 1-D tensors)
@@ -79,7 +80,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Track whether the NEXT position is a sentence/reply start for each request.
         # Initialized to True to treat BOS as a start position.
         self.next_pos_is_start: torch.Tensor = torch.ones(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
 
         for i, req in enumerate(reqs):
@@ -370,7 +371,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         return logits
 
     def _filter(self, keep_indices: torch.Tensor):
-        keep = keep_indices
+        keep = keep_indices.cpu()
         self.guard_window = self.guard_window[keep]
         self.hard_at_bos = self.hard_at_bos[keep]
         self.hard_at_all_starts = self.hard_at_all_starts[keep]
