@@ -37,6 +37,8 @@ _bigram_cache_by_tok: Dict[tuple, _BigramCache] = {}
 _unigram_index_by_tok: Dict[tuple, _UnigramIndex] = {}
 _unigram_prefix_index_by_tok: Dict[tuple, Dict[str, List[int]]] = {}
 _sentence_end_token_ids_cache: Dict[tuple, Set[int]] = {}
+# Cache surface variant token IDs: (tokenizer_key, word, quote_chars_tuple) -> (set[token_ids], list[prefixes])
+_surface_variant_cache: Dict[tuple, tuple] = {}
 
 
 _SP_SPACE = "\u2581"
@@ -257,3 +259,103 @@ def get_sentence_end_token_ids(
     with _lock:
         _sentence_end_token_ids_cache[key] = end_ids
     return end_ids
+
+
+def get_surface_variant_tokens(
+    tokenizer,
+    word: str,
+    quote_chars: Set[str],
+    end_punct: List[str],
+) -> tuple:
+    """Build or fetch cached token IDs for surface variants of a word.
+
+    Returns: (set[token_ids], list[prefixes])
+
+    PERFORMANCE CRITICAL: This caches the expensive encode/decode operations
+    per word globally, so they only run once even if _prepare() is called
+    multiple times during batch merges.
+    """
+    import re
+
+    # Create stable cache key
+    key = (
+        type(tokenizer).__name__,
+        type(tokenizer).__module__,
+        word,
+        tuple(sorted(quote_chars)),
+        tuple(end_punct),
+    )
+
+    with _lock:
+        cached = _surface_variant_cache.get(key)
+        if cached is not None:
+            return cached
+
+    # Build surface variants (happens once per word)
+    first_ids: Set[int] = set()
+    prefixes: List[List[int]] = []
+
+    base_surfaces = [word, f" {word}"]
+    for q in quote_chars:
+        base_surfaces.append(f"{q}{word}")
+        base_surfaces.append(f" {q}{word}")
+
+    surfaces = []
+    for s in base_surfaces:
+        surfaces.append(s)
+        for p in end_punct:
+            surfaces.append(s + p)
+
+    for surface in surfaces:
+        try:
+            ids = tokenizer.encode(surface, add_special_tokens=False)
+        except Exception:
+            ids = []
+        if not ids:
+            continue
+
+        first_idx = 0
+        try:
+            for j, tok in enumerate(ids):
+                s = tokenizer.decode([tok])
+                if re.search(r"[A-Za-z]", s):
+                    # Skip contraction fragments
+                    s_stripped = s.strip()
+                    is_contraction_fragment = (
+                        len(s_stripped) <= 3
+                        and len(s_stripped) > 0
+                        and s_stripped[0] in ("'", '"', """, """, "`")
+                    )
+                    if is_contraction_fragment:
+                        continue
+                    first_idx = j
+                    break
+
+            tok_id = int(ids[first_idx])
+            s_check = tokenizer.decode([tok_id]).strip()
+            is_frag = (
+                len(s_check) <= 3
+                and len(s_check) > 0
+                and s_check[0] in ("'", '"', """, """, "`")
+            )
+            if not is_frag:
+                first_ids.add(tok_id)
+                prefixes.append(ids[first_idx:])
+        except Exception:
+            try:
+                s_check = tokenizer.decode([int(ids[0])]).strip()
+                is_frag = (
+                    len(s_check) <= 3
+                    and len(s_check) > 0
+                    and s_check[0] in ("'", '"', """, """, "`")
+                )
+                if not is_frag:
+                    first_ids.add(int(ids[0]))
+                    prefixes.append(ids)
+            except Exception:
+                pass
+
+    result = (first_ids, prefixes)
+    with _lock:
+        _surface_variant_cache[key] = result
+    return result

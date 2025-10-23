@@ -19,6 +19,7 @@ from sglang.srt.sampling.penaltylib.vocab_cache import (
     get_unigram_first_word_index,
     get_unigram_prefix_index,
     get_sentence_end_token_ids,
+    get_surface_variant_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,72 +143,22 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
 
-            # IMPORTANT: Surface variant generation is REQUIRED for correctness!
-            # The vocab cache alone misses context-specific tokens (e.g., tokens that appear
-            # after quotes but decode differently in isolation). Reduce punctuation variants
-            # to minimize performance impact while maintaining correctness.
+            # PERFORMANCE FIX: Use cached surface variant generation
+            # Results are cached globally per word, so even if _prepare() is called
+            # multiple times during batch merges, we only do encode/decode ONCE per word
             end_punct = [",", ".", "?"]
 
-            for w in words_with_variants:
-                # Build surfaces for plain word, space+word, and all quote-like
-                # prefixes with and without a leading space to mirror tokenizer contexts.
-                base_surfaces = [w, f" {w}"]
-                for q in self._OPENING_QUOTES:
-                    base_surfaces.append(f"{q}{w}")
-                    base_surfaces.append(f" {q}{w}")
-                surfaces = []
-                for s in base_surfaces:
-                    surfaces.append(s)
-                    for p in end_punct:
-                        surfaces.append(s + p)
-                for surface in surfaces:
+            if tokenizer is not None:
+                for w in words_with_variants:
                     try:
-                        ids = tokenizer.encode(surface, add_special_tokens=False)
-                    except Exception:
-                        ids = []
-                    if not ids:
-                        continue
-                    first_idx = 0
-                    try:
-                        for j, tok in enumerate(ids):
-                            s = tokenizer.decode([tok])
-                            if re.search(r"[A-Za-z]", s):
-                                # Skip contraction fragments: tokens that are just apostrophe + short suffix
-                                # like 't, 's, 're, 'm, 'd, 'll, 've which are parts of contractions
-                                s_stripped = s.strip()
-                                # Check if it's a contraction fragment: starts with apostrophe/quote and has <=3 chars total
-                                is_contraction_fragment = (
-                                    len(s_stripped) <= 3
-                                    and len(s_stripped) > 0
-                                    and s_stripped[0] in ("'", '"', """, """, "`")
-                                )
-                                if is_contraction_fragment:
-                                    continue  # Skip this token, keep looking
-                                first_idx = j
-                                break
-                        tok_id = int(ids[first_idx])
-                        s_check = tokenizer.decode([tok_id]).strip()
-                        is_frag = (
-                            len(s_check) <= 3
-                            and len(s_check) > 0
-                            and s_check[0] in ("'", '"', """, """, "`")
+                        w_ids, w_prefixes = get_surface_variant_tokens(
+                            tokenizer, w, self._OPENING_QUOTES, end_punct
                         )
-                        if not is_frag:
-                            first_ids.add(tok_id)
-                            prefixes.append(ids[first_idx:])
+                        first_ids.update(w_ids)
+                        prefixes.extend(w_prefixes)
                     except Exception:
-                        try:
-                            s_check = tokenizer.decode([int(ids[0])]).strip()
-                            is_frag = (
-                                len(s_check) <= 3
-                                and len(s_check) > 0
-                                and s_check[0] in ("'", '"', """, """, "`")
-                            )
-                            if not is_frag:
-                                first_ids.add(int(ids[0]))
-                                prefixes.append(ids)
-                        except Exception:
-                            pass
+                        # If cache lookup fails, skip this word
+                        pass
 
             # Augment via cached index of first-word -> token ids
             try:
