@@ -446,7 +446,15 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         if not reqs:
             return None
         out: List[Optional[torch.Tensor]] = [None] * len(reqs)
-        for i, req in enumerate(reqs):
+        # Clamp to available control-state to avoid races
+        L = min(
+            len(reqs),
+            int(self.guard_window.size(0)) if torch.is_tensor(self.guard_window) else len(reqs),
+            int(self.hard_at_bos.size(0)) if torch.is_tensor(self.hard_at_bos) else len(reqs),
+            int(self.hard_at_all_starts.size(0)) if torch.is_tensor(self.hard_at_all_starts) else len(reqs),
+        )
+        for i in range(L):
+            req = reqs[i]
             first_ids = self.first_token_ids[i]
             if first_ids is None or (
                 hasattr(first_ids, "numel") and first_ids.numel() == 0

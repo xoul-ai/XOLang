@@ -218,7 +218,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.dry_multiplier = self.dry_multiplier[keep]
         self.dry_base = self.dry_base[keep]
         self.dry_allowed_length = self.dry_allowed_length[keep]
-        self.breakers = [self.breakers[j] for j in keep_indices.tolist()]
+        self.breakers = [self.breakers[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):
         self.dry_multiplier = torch.cat(

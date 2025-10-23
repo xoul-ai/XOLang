@@ -122,9 +122,22 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         if reqs is None:
             return
-        if len(reqs) != len(self.active_after_the):
+        # Clamp to avoid rare races with scheduler/filter/merge
+        B_ids = int(output_ids.numel())
+        L = min(
+            len(reqs),
+            B_ids,
+            len(self.active_after_the),
+            len(self.pending_after_the_at_start),
+            len(self.suffix_variant_space),
+            len(self.suffix_progress),
+            len(self.first_token_ids_set_per_req),
+            len(self.first_token_requires_space_per_req),
+        )
+        if L == 0:
             return
-        for i, req in enumerate(reqs):
+        for i in range(L):
+            req = reqs[i]
             last_id = int(output_ids[i].item())
 
             first_ids_set = self.first_token_ids_set_per_req[i]
@@ -175,23 +188,25 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         suffix_seq_nospace = self.suffix_seq_nospace
 
         reqs = self.orchestrator.reqs()
-        if reqs is None or len(reqs) != B:
+        if reqs is None:
             return logits
-        if len(active_after_the) != B:
+        # Clamp to the smallest consistent length to avoid rare race conditions
+        L = min(
+            B,
+            len(reqs),
+            len(active_after_the),
+            len(pending_after_the_at_start),
+            len(suffix_variant_space),
+            len(suffix_progress),
+            len(first_token_ids_set_per_req),
+            len(last_hard_blocks),
+        )
+        if L == 0:
             return logits
-        if len(pending_after_the_at_start) != B:
-            return logits
-        if len(suffix_variant_space) != B:
-            return logits
-        if len(suffix_progress) != B:
-            return logits
-        if len(first_token_ids_set_per_req) != B:
-            return logits
-        if len(last_hard_blocks) != B:
-            return logits
-        for j in range(len(reqs)):
+        for j in range(L):
             last_hard_blocks[j] = None
-        for i, req in enumerate(reqs):
+        for i in range(L):
+            req = reqs[i]
             out_ids_list = getattr(req, "output_ids", []) or []
 
             is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
@@ -260,7 +275,15 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         if not reqs:
             return None
         out: List[Optional[torch.Tensor]] = [None] * len(reqs)
-        for i, req in enumerate(reqs):
+        # Clamp to available per-request state to avoid races
+        L = min(
+            len(reqs),
+            len(self.pending_after_the_at_start),
+            len(self.suffix_variant_space),
+            len(self.first_token_ids_set_per_req),
+        )
+        for i in range(L):
+            req = reqs[i]
             out_ids_list = getattr(req, "output_ids", []) or []
 
             is_start_here = (len(out_ids_list) == 0) or self._is_start_position(req)
