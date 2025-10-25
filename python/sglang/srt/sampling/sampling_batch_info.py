@@ -145,7 +145,7 @@ class SamplingBatchInfo:
         # While we can choose not to even create the class instances if they are not required, this
         # could add additional complexity to the {ScheduleBatch} class, especially we need to
         # handle {filter_batch()} and {merge_batch()} cases as well.
-        enable_bigram = cls._get_global_server_args_dict().get(
+        enable_bigram = global_server_args_dict.get(
             "enable_bigram_start_guard_the_word", True
         )
 

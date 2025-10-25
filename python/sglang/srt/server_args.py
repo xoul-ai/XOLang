@@ -646,24 +646,26 @@ class ServerArgs:
             )
 
         if self.enable_dp_lm_head:
-            assert (
-                self.enable_dp_attention
-            ), "Please enable dp attention when setting enable_dp_lm_head. "
+            assert self.enable_dp_attention, (
+                "Please enable dp attention when setting enable_dp_lm_head. "
+            )
 
         # MoE kernel
         if self.moe_runner_backend == "flashinfer_cutlass":
-            assert (
-                self.quantization == "modelopt_fp4"
-            ), "modelopt_fp4 quantization is required for Flashinfer MOE"
+            assert self.quantization == "modelopt_fp4", (
+                "modelopt_fp4 quantization is required for Flashinfer MOE"
+            )
             assert self.ep_size in [
                 1,
                 self.tp_size,
-            ], "The expert parallel size must be 1 or the same as the tensor parallel size"
+            ], (
+                "The expert parallel size must be 1 or the same as the tensor parallel size"
+            )
 
         if self.moe_runner_backend == "flashinfer_trtllm":
-            assert (
-                self.quantization == "modelopt_fp4" or self.quantization == "fp8"
-            ), "modelopt_fp4 quantization is required for Flashinfer TRTLLM MoE"
+            assert self.quantization == "modelopt_fp4" or self.quantization == "fp8", (
+                "modelopt_fp4 quantization is required for Flashinfer TRTLLM MoE"
+            )
             self.disable_shared_experts_fusion = True
             logger.warning(
                 "FlashInfer TRTLLM MoE is enabled. --disable-shared-experts-fusion is automatically set."
@@ -725,9 +727,9 @@ class ServerArgs:
         if self.speculative_algorithm in ("EAGLE", "EAGLE3", "STANDALONE"):
             if self.speculative_algorithm == "STANDALONE":
                 # TODO: support dp attention for standalone speculative decoding
-                assert (
-                    self.enable_dp_attention is False
-                ), "Currently standalone speculative decoding does not support dp attention."
+                assert self.enable_dp_attention is False, (
+                    "Currently standalone speculative decoding does not support dp attention."
+                )
             if self.max_running_requests is None:
                 self.max_running_requests = 48
             self.disable_overlap_schedule = True
@@ -810,12 +812,12 @@ class ServerArgs:
 
         # PD disaggregation
         if self.disaggregation_mode == "decode":
-            assert (
-                self.disaggregation_decode_tp is None
-            ), "Cannot set --disaggregation-decode-tp for the decode engine."
-            assert (
-                self.disaggregation_decode_dp is None
-            ), "Cannot set --disaggregation-decode-dp for the decode engine."
+            assert self.disaggregation_decode_tp is None, (
+                "Cannot set --disaggregation-decode-tp for the decode engine."
+            )
+            assert self.disaggregation_decode_dp is None, (
+                "Cannot set --disaggregation-decode-dp for the decode engine."
+            )
 
             self.disable_radix_cache = True
             logger.warning("KV cache is forced as chunk cache for decode server")
@@ -2264,16 +2266,18 @@ class ServerArgs:
 
     def check_server_args(self):
         # Check parallel size constraints
-        assert (
-            self.tp_size * self.pp_size
-        ) % self.nnodes == 0, "tp_size must be divisible by number of nodes"
+        assert (self.tp_size * self.pp_size) % self.nnodes == 0, (
+            "tp_size must be divisible by number of nodes"
+        )
 
         if self.pp_size > 1:
             assert (
                 self.disable_overlap_schedule
                 and self.speculative_algorithm is None
                 and not self.enable_mixed_chunk
-            ), "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
+            ), (
+                "Pipeline parallelism is not compatible with overlap schedule, speculative decoding, mixed chunked prefill."
+            )
 
         assert not (
             self.dp_size > 1 and self.nnodes != 1 and not self.enable_dp_attention
@@ -2292,16 +2296,16 @@ class ServerArgs:
 
         # Check speculative decoding
         if self.speculative_algorithm is not None:
-            assert (
-                not self.enable_mixed_chunk
-            ), "enable_mixed_chunk is required for speculative decoding"
+            assert not self.enable_mixed_chunk, (
+                "enable_mixed_chunk is required for speculative decoding"
+            )
 
         # Check chunked prefill
         # Skip validation if chunked prefill is disabled (i.e., size <= 0).
         if self.chunked_prefill_size > 0:
-            assert (
-                self.chunked_prefill_size % self.page_size == 0
-            ), "chunked_prefill_size must be divisible by page_size"
+            assert self.chunked_prefill_size % self.page_size == 0, (
+                "chunked_prefill_size must be divisible by page_size"
+            )
 
         # Check multi tokenizer
         assert self.tokenizer_worker_num > 0, "Tokenizer worker num must >= 1"
@@ -2343,9 +2347,9 @@ class ServerArgs:
                                 lora_name=lora_path, lora_path=lora_path, pinned=False
                             )
                     elif isinstance(lora_path, dict):
-                        assert (
-                            "lora_name" in lora_path and "lora_path" in lora_path
-                        ), f"When providing LoRA paths as a list of dict, each dict should contain 'lora_name' and 'lora_path' keys. Got: {lora_path}"
+                        assert "lora_name" in lora_path and "lora_path" in lora_path, (
+                            f"When providing LoRA paths as a list of dict, each dict should contain 'lora_name' and 'lora_path' keys. Got: {lora_path}"
+                        )
                         lora_ref = LoRARef(
                             lora_name=lora_path["lora_name"],
                             lora_path=lora_path["lora_path"],
@@ -2374,15 +2378,17 @@ class ServerArgs:
             if self.lora_target_modules:
                 self.lora_target_modules = set(self.lora_target_modules)
                 if "all" in self.lora_target_modules:
-                    assert (
-                        len(self.lora_target_modules) == 1
-                    ), "If 'all' is specified in --lora-target-modules, it should be the only module specified."
+                    assert len(self.lora_target_modules) == 1, (
+                        "If 'all' is specified in --lora-target-modules, it should be the only module specified."
+                    )
                     self.lora_target_modules = set(SUPPORTED_LORA_TARGET_MODULES)
 
             # Ensure sufficient information is provided for LoRA initialization.
             assert self.lora_paths or (
                 self.max_lora_rank and self.lora_target_modules
-            ), "When no initial --lora-paths is provided, you need to specify both --max-lora-rank and --lora-target-modules for LoRA initialization."
+            ), (
+                "When no initial --lora-paths is provided, you need to specify both --max-lora-rank and --lora-target-modules for LoRA initialization."
+            )
 
             # Validate max_loaded_loras
             if self.max_loaded_loras is not None:
@@ -2413,43 +2419,45 @@ class ServerArgs:
             "tse",
             "default",
             "customer",
-        ], f"Unsupported {arg_name} rule type: '{rule}'. Must be one of: 'tse', 'default', 'customer'"
+        ], (
+            f"Unsupported {arg_name} rule type: '{rule}'. Must be one of: 'tse', 'default', 'customer'"
+        )
 
         if rule == "tse":
-            assert (
-                len(buckets_rule) == 4
-            ), f"{arg_name} TSE rule requires exactly 4 parameters: ['tse', middle, base, count], got {len(buckets_rule)}"
+            assert len(buckets_rule) == 4, (
+                f"{arg_name} TSE rule requires exactly 4 parameters: ['tse', middle, base, count], got {len(buckets_rule)}"
+            )
             try:
                 middle = float(buckets_rule[1])
                 base = float(buckets_rule[2])
                 count = int(buckets_rule[3])
             except (ValueError, IndexError):
-                assert (
-                    False
-                ), f"{arg_name} TSE rule parameters must be: ['tse', <float:middle>, <float:base>, <int:count>]"
+                assert False, (
+                    f"{arg_name} TSE rule parameters must be: ['tse', <float:middle>, <float:base>, <int:count>]"
+                )
             assert base > 1, f"{arg_name} TSE base must be larger than 1, got: {base}"
             assert count > 0, f"{arg_name} TSE count must be positive, got: {count}"
             assert middle > 0, f"{arg_name} TSE middle must be positive, got: {middle}"
 
         elif rule == "default":
-            assert (
-                len(buckets_rule) == 1
-            ), f"{arg_name} default rule should only have one parameter: ['default'], got {len(buckets_rule)}"
+            assert len(buckets_rule) == 1, (
+                f"{arg_name} default rule should only have one parameter: ['default'], got {len(buckets_rule)}"
+            )
 
         elif rule == "customer":
-            assert (
-                len(buckets_rule) >= 2
-            ), f"{arg_name} customer rule requires at least one bucket value: ['customer', value1, ...]"
+            assert len(buckets_rule) >= 2, (
+                f"{arg_name} customer rule requires at least one bucket value: ['customer', value1, ...]"
+            )
             try:
                 bucket_values = [float(x) for x in buckets_rule[1:]]
             except ValueError:
                 assert False, f"{arg_name} customer rule bucket values must be numeric"
-            assert len(set(bucket_values)) == len(
-                bucket_values
-            ), f"{arg_name} customer rule bucket values should not contain duplicates"
-            assert all(
-                val >= 0 for val in bucket_values
-            ), f"{arg_name} customer rule bucket values should be non-negative"
+            assert len(set(bucket_values)) == len(bucket_values), (
+                f"{arg_name} customer rule bucket values should not contain duplicates"
+            )
+            assert all(val >= 0 for val in bucket_values), (
+                f"{arg_name} customer rule bucket values should be non-negative"
+            )
 
     def model_specific_adjustments(self):
         hf_config = self.get_hf_config()
@@ -2466,9 +2474,9 @@ class ServerArgs:
             logger.info(
                 f"Use {self.attention_backend} as attention backend for GptOssForCausalLM"
             )
-            assert (
-                self.attention_backend in supported_backends
-            ), f"GptOssForCausalLM requires one of {supported_backends} attention backend, but got '{self.attention_backend}'"
+            assert self.attention_backend in supported_backends, (
+                f"GptOssForCausalLM requires one of {supported_backends} attention backend, but got '{self.attention_backend}'"
+            )
 
             if is_sm100_supported():
                 if not self.enable_dp_attention:
@@ -2489,9 +2497,9 @@ class ServerArgs:
                 )
             else:
                 if self.moe_runner_backend == "triton_kernel":
-                    assert (
-                        self.ep_size == 1
-                    ), "Triton kernel MoE is only supported when ep_size == 1"
+                    assert self.ep_size == 1, (
+                        "Triton kernel MoE is only supported when ep_size == 1"
+                    )
                 if (
                     self.moe_runner_backend == "auto"
                     and self.ep_size == 1
@@ -2642,9 +2650,9 @@ class PortArgs:
             else:
                 dist_init_addr = server_args.dist_init_addr.split(":")
 
-            assert (
-                len(dist_init_addr) == 2
-            ), "please provide --dist-init-addr as host:port of head node"
+            assert len(dist_init_addr) == 2, (
+                "please provide --dist-init-addr as host:port of head node"
+            )
 
             dist_init_host, dist_init_port = dist_init_addr
             port_base = int(dist_init_port) + 1

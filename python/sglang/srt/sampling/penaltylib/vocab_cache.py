@@ -33,9 +33,12 @@ class _UnigramIndex:
         self.word_to_token_ids = word_to_token_ids
 
 
-_bigram_cache_by_tok: Dict[int, _BigramCache] = {}
-_unigram_index_by_tok: Dict[int, _UnigramIndex] = {}
+_bigram_cache_by_tok: Dict[tuple, _BigramCache] = {}
+_unigram_index_by_tok: Dict[tuple, _UnigramIndex] = {}
 _unigram_prefix_index_by_tok: Dict[tuple, Dict[str, List[int]]] = {}
+_sentence_end_token_ids_cache: Dict[tuple, Set[int]] = {}
+# Cache surface variant token IDs: (tokenizer_key, word, quote_chars_tuple) -> (set[token_ids], list[prefixes])
+_surface_variant_cache: Dict[tuple, tuple] = {}
 
 
 _SP_SPACE = "\u2581"
@@ -67,10 +70,12 @@ def get_bigram_cache(tokenizer, vocab_size: int, quote_chars: Set[str]) -> _Bigr
 
     Returns CPU lists/sets of token IDs; callers can move to device as needed.
     """
-    key = id(tokenizer)
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
     with _lock:
         cached = _bigram_cache_by_tok.get(key)
-        if cached is not None and cached.vocab_size == vocab_size:
+        if cached is not None:
             return cached
 
     # Build cache
@@ -132,10 +137,12 @@ def get_unigram_first_word_index(
     starts with that word (case-insensitive), after stripping leading spaces/quotes,
     and with a word boundary immediately after the word.
     """
-    key = id(tokenizer)
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
     with _lock:
         cached = _unigram_index_by_tok.get(key)
-        if cached is not None and cached.vocab_size == vocab_size:
+        if cached is not None:
             return cached
 
     word_to_token_ids: Dict[str, List[int]] = {}
@@ -184,7 +191,9 @@ def get_unigram_prefix_index(
     """
     if prefix_len <= 0:
         return {}
-    key = (id(tokenizer), vocab_size, int(prefix_len))
+    # PERFORMANCE FIX: Use stable key based on class and vocab_size instead of id()
+    # This prevents cache invalidation across batches
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__, int(prefix_len))
     with _lock:
         cached = _unigram_prefix_index_by_tok.get(key)
         if cached is not None:
@@ -211,3 +220,142 @@ def get_unigram_prefix_index(
     with _lock:
         _unigram_prefix_index_by_tok[key] = prefix_map
     return prefix_map
+
+
+def get_sentence_end_token_ids(
+    tokenizer, vocab_size: int, quote_chars: Set[str], sentence_end_chars: Set[str]
+) -> Set[int]:
+    """Build or fetch cached set of token IDs that end with sentence-ending or quote chars.
+
+    Returns a set of token IDs where the decoded token ends with a sentence-ending
+    character (after stripping trailing whitespace). This is used to detect sentence
+    boundaries without calling decode() in hot paths.
+    """
+    # PERFORMANCE: Cache by vocab_size and tokenizer class to avoid rebuilding
+    key = (vocab_size, type(tokenizer).__name__, type(tokenizer).__module__)
+    with _lock:
+        cached = _sentence_end_token_ids_cache.get(key)
+        if cached is not None:
+            return cached
+
+    # Build cache: scan vocab once
+    end_ids: Set[int] = set()
+    for tid in range(vocab_size):
+        try:
+            s = tokenizer.decode([tid])
+        except Exception:
+            continue
+        if not s:
+            continue
+        # Check last non-whitespace character
+        j = len(s) - 1
+        while j >= 0 and s[j].isspace():
+            j -= 1
+        if j >= 0:
+            ch = s[j]
+            if ch in quote_chars or ch in sentence_end_chars:
+                end_ids.add(tid)
+
+    with _lock:
+        _sentence_end_token_ids_cache[key] = end_ids
+    return end_ids
+
+
+def get_surface_variant_tokens(
+    tokenizer,
+    word: str,
+    quote_chars: Set[str],
+    end_punct: List[str],
+) -> tuple:
+    """Build or fetch cached token IDs for surface variants of a word.
+
+    Returns: (set[token_ids], list[prefixes])
+
+    PERFORMANCE CRITICAL: This caches the expensive encode/decode operations
+    per word globally, so they only run once even if _prepare() is called
+    multiple times during batch merges.
+    """
+    import re
+
+    # Create stable cache key
+    key = (
+        type(tokenizer).__name__,
+        type(tokenizer).__module__,
+        word,
+        tuple(sorted(quote_chars)),
+        tuple(end_punct),
+    )
+
+    with _lock:
+        cached = _surface_variant_cache.get(key)
+        if cached is not None:
+            return cached
+
+    # Build surface variants (happens once per word)
+    first_ids: Set[int] = set()
+    prefixes: List[List[int]] = []
+
+    base_surfaces = [word, f" {word}"]
+    for q in quote_chars:
+        base_surfaces.append(f"{q}{word}")
+        base_surfaces.append(f" {q}{word}")
+
+    surfaces = []
+    for s in base_surfaces:
+        surfaces.append(s)
+        for p in end_punct:
+            surfaces.append(s + p)
+
+    for surface in surfaces:
+        try:
+            ids = tokenizer.encode(surface, add_special_tokens=False)
+        except Exception:
+            ids = []
+        if not ids:
+            continue
+
+        first_idx = 0
+        try:
+            for j, tok in enumerate(ids):
+                s = tokenizer.decode([tok])
+                if re.search(r"[A-Za-z]", s):
+                    # Skip contraction fragments
+                    s_stripped = s.strip()
+                    is_contraction_fragment = (
+                        len(s_stripped) <= 3
+                        and len(s_stripped) > 0
+                        and s_stripped[0] in ("'", '"', """, """, "`")
+                    )
+                    if is_contraction_fragment:
+                        continue
+                    first_idx = j
+                    break
+
+            tok_id = int(ids[first_idx])
+            s_check = tokenizer.decode([tok_id]).strip()
+            is_frag = (
+                len(s_check) <= 3
+                and len(s_check) > 0
+                and s_check[0] in ("'", '"', """, """, "`")
+            )
+            if not is_frag:
+                first_ids.add(tok_id)
+                prefixes.append(ids[first_idx:])
+        except Exception:
+            try:
+                s_check = tokenizer.decode([int(ids[0])]).strip()
+                is_frag = (
+                    len(s_check) <= 3
+                    and len(s_check) > 0
+                    and s_check[0] in ("'", '"', """, """, "`")
+                )
+                if not is_frag:
+                    first_ids.add(int(ids[0]))
+                    prefixes.append(ids)
+            except Exception:
+                pass
+
+    result = (first_ids, prefixes)
+    with _lock:
+        _surface_variant_cache[key] = result
+    return result

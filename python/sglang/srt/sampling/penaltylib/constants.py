@@ -303,8 +303,6 @@ SENTENCE_END_CHARS = {".", "!", "?", "\n", "…"}
 # closing variants to be robust to tokenizer/model usage.
 QUOTE_CHARS = {
     '"',
-    "'",
-    "`",
     "“",  # U+201C Left double quotation mark
     "”",  # U+201D Right double quotation mark
     "„",  # U+201E Double low-9 quotation mark

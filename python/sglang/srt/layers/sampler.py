@@ -74,106 +74,84 @@ class Sampler(nn.Module):
 
         # Compute hard-block ids once for this step (if any penalizers)
         hard_now = None
-        try:
-            if sampling_info.penalizer_orchestrator is not None:
-                hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
-        except Exception:
-            hard_now = None
+        if sampling_info.penalizer_orchestrator is not None:
+            hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
 
         # Optionally synchronize blocked ids across TP to avoid rank divergence
-        try:
-            if (
-                SYNC_BLOCKED_IDS_ACROSS_TP
-                and dist.is_initialized()
-                and self.tp_sync_group is not None
-            ):
-                hard = hard_now
-                if hard:
-                    # Compute local max length
-                    local_max = 0
-                    for ids in hard:
-                        if ids is not None:
-                            local_max = max(local_max, int(ids.numel()))
-                    # Get global max across TP ranks
-                    local_max_tensor = torch.tensor(
-                        [local_max], device=logits.device, dtype=torch.int32
+        if (
+            SYNC_BLOCKED_IDS_ACROSS_TP
+            and dist.is_initialized()
+            and self.tp_sync_group is not None
+        ):
+            hard = hard_now
+            if hard:
+                # Compute local max length
+                local_max = 0
+                for ids in hard:
+                    if ids is not None:
+                        local_max = max(local_max, int(ids.numel()))
+                # Get global max across TP ranks
+                local_max_tensor = torch.tensor(
+                    [local_max], device=logits.device, dtype=torch.int32
+                )
+                dist.all_reduce(
+                    local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group
+                )
+                max_len = int(local_max_tensor.item())
+                if max_len > 0:
+                    B = len(hard)
+                    # Reuse pad buffer and slice
+                    need_alloc = (
+                        self._tp_pad_buf is None
+                        or self._tp_pad_buf.size(0) < B
+                        or self._tp_pad_buf.size(1) < max_len
                     )
-                    dist.all_reduce(
-                        local_max_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group
-                    )
-                    max_len = int(local_max_tensor.item())
-                    if max_len > 0:
-                        B = len(hard)
-                        # Reuse pad buffer and slice
-                        need_alloc = (
-                            self._tp_pad_buf is None
-                            or self._tp_pad_buf.size(0) < B
-                            or self._tp_pad_buf.size(1) < max_len
+                    if need_alloc:
+                        self._tp_pad_buf = torch.empty(
+                            (max(B, 1), max(max_len, 1)),
+                            device=logits.device,
+                            dtype=torch.int64,
                         )
-                        if need_alloc:
-                            self._tp_pad_buf = torch.empty(
-                                (max(B, 1), max(max_len, 1)),
-                                device=logits.device,
-                                dtype=torch.int64,
-                            )
-                        pad = self._tp_pad_buf[:B, :max_len]
-                        pad.fill_(-1)
-                        for i, ids in enumerate(hard):
-                            if ids is None or ids.numel() == 0:
-                                continue
-                            l = min(int(ids.numel()), max_len)
-                            pad[i, :l] = ids[:l]
-                        # All-gather across TP, chunking wide columns to reduce single-transfer size
-                        world_size = dist.get_world_size(self.tp_sync_group)
-                        CHUNK_COL_THRESHOLD = 8192
-                        unions_per_row = [[] for _ in range(B)]
-                        if max_len > CHUNK_COL_THRESHOLD:
-                            chunk = 4096
-                            for start in range(0, max_len, chunk):
-                                end = min(start + chunk, max_len)
-                                pad_view = pad[:, start:end]
-                                gathered = [torch.empty_like(pad_view) for _ in range(world_size)]
-                                dist.all_gather(gathered, pad_view, group=self.tp_sync_group)
-                                for i in range(B):
-                                    for t in gathered:
-                                        valid = t[i]
-                                        valid = valid[valid >= 0]
-                                        if valid.numel() > 0:
-                                            unions_per_row[i].append(valid)
-                        else:
-                            gathered = [torch.empty_like(pad) for _ in range(world_size)]
-                            dist.all_gather(gathered, pad, group=self.tp_sync_group)
+                    pad = self._tp_pad_buf[:B, :max_len]
+                    pad.fill_(-1)
+                    for i, ids in enumerate(hard):
+                        if ids is None or ids.numel() == 0:
+                            continue
+                        l = min(int(ids.numel()), max_len)
+                        pad[i, :l] = ids[:l]
+                    # All-gather across TP, chunking wide columns to reduce single-transfer size
+                    world_size = dist.get_world_size(self.tp_sync_group)
+                    CHUNK_COL_THRESHOLD = 8192
+                    unions_per_row = [[] for _ in range(B)]
+                    if max_len > CHUNK_COL_THRESHOLD:
+                        chunk = 4096
+                        for start in range(0, max_len, chunk):
+                            end = min(start + chunk, max_len)
+                            pad_view = pad[:, start:end]
+                            gathered = [torch.empty_like(pad_view) for _ in range(world_size)]
+                            dist.all_gather(gathered, pad_view, group=self.tp_sync_group)
                             for i in range(B):
                                 for t in gathered:
-                                    row = t[i]
-                                    valid = row[row >= 0]
+                                    valid = t[i]
+                                    valid = valid[valid >= 0]
                                     if valid.numel() > 0:
                                         unions_per_row[i].append(valid)
-                        # Union per row once
+                    else:
+                        gathered = [torch.empty_like(pad) for _ in range(world_size)]
+                        dist.all_gather(gathered, pad, group=self.tp_sync_group)
                         for i in range(B):
-                            if unions_per_row[i]:
-                                hard[i] = torch.unique(torch.cat(unions_per_row[i]))
-                        # Log a small summary regardless, to see empties
-                        for bi in range(min(B, 2)):
-                            ids = hard[bi]
-                            count = (
-                                int(ids.numel())
-                                if (ids is not None and hasattr(ids, "numel"))
-                                else 0
-                            )
-                            sample = (
-                                ids[: min(8, ids.numel())].tolist() if count > 0 else []
-                            )
-
-        except Exception:
-            pass
+                            for t in gathered:
+                                row = t[i]
+                                valid = row[row >= 0]
+                                if valid.numel() > 0:
+                                    unions_per_row[i].append(valid)
+                    # Union per row once
+                    for i in range(B):
+                        if unions_per_row[i]:
+                            hard[i] = torch.unique(torch.cat(unions_per_row[i]))
 
         # Reapply hard blocks from penalizers just before sampling to ensure persistence
-        try:
-            sampling_info.enforce_hard_blocks(logits, hard_now)
-        except Exception:
-            # Never break sampling due to diagnostics
-            pass
+        sampling_info.enforce_hard_blocks(logits, hard_now)
 
         if self.use_nan_detection and torch.any(torch.isnan(logits)):
             logger.warning("Detected errors during sampling! NaN in the logits.")
@@ -260,13 +238,25 @@ class Sampler(nn.Module):
                 batch_next_token_ids,
             ]
 
-        if SYNC_TOKEN_IDS_ACROSS_TP or sampling_info.grammars:
+        # Sync token IDs across TP ranks when:
+        # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
+        # 2. Grammars are used (xgrammar increases non-determinism)
+        # 3. Penalizers are active (they depend on output_ids being synchronized)
+        needs_sync = (
+            SYNC_TOKEN_IDS_ACROSS_TP
+            or sampling_info.grammars
+            or (sampling_info.penalizer_orchestrator is not None
+                and sampling_info.penalizer_orchestrator.is_required)
+        )
+
+        if needs_sync:
             # For performance reasons, SGLang does not sync the final token IDs across TP ranks by default.
             # This saves one all-reduce, but the correctness of this approach depends on the determinism of several operators:
             # the last all-reduce, the last lm_head matmul, and all sampling kernels.
             # These kernels are deterministic in most cases, but there are some rare instances where they are not deterministic.
             # In such cases, enable this env variable to prevent hanging due to TP ranks becoming desynchronized.
             # When using xgrammar, this becomes more likely so we also do the sync when grammar is used.
+            # When using penalizers (DRY, unigram/bigram guards), they depend on output_ids being identical across ranks.
 
             torch.distributed.all_reduce(
                 batch_next_token_ids,

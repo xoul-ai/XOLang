@@ -18,6 +18,8 @@ from sglang.srt.sampling.penaltylib.constants import (
 from sglang.srt.sampling.penaltylib.vocab_cache import (
     get_unigram_first_word_index,
     get_unigram_prefix_index,
+    get_sentence_end_token_ids,
+    get_surface_variant_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,24 +50,25 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         reqs = self.orchestrator.reqs()
         device = self.orchestrator.device
 
+        # Keep control state on CPU to avoid GPU sync in Python control flow
         self.guard_window: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.int32, device=device
+            (len(reqs),), dtype=torch.int32
         )
         self.hard_at_bos: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         self.hard_at_all_starts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         # Optional: apply prefix-neighbor hard block at starts
         self.hard_prefix_at_starts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
         self.bias_vals: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.float32, device=device
+            (len(reqs),), dtype=torch.float32
         )
         self.generated_counts: torch.Tensor = torch.zeros(
-            (len(reqs),), dtype=torch.int32, device=device
+            (len(reqs),), dtype=torch.int32
         )
 
         # Track hard blocks applied at last step per request (list of 1-D tensors)
@@ -79,8 +82,23 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Track whether the NEXT position is a sentence/reply start for each request.
         # Initialized to True to treat BOS as a start position.
         self.next_pos_is_start: torch.Tensor = torch.ones(
-            (len(reqs),), dtype=torch.bool, device=device
+            (len(reqs),), dtype=torch.bool
         )
+
+        # PERFORMANCE: Use cached sentence-ending token IDs (built once per vocab)
+        self.sentence_end_token_ids: Optional[Set[int]] = None
+        tokenizer0 = None
+        for r in reqs:
+            tok = getattr(r, "tokenizer", None)
+            if tok is not None:
+                tokenizer0 = tok
+                break
+        if tokenizer0 is not None:
+            vocab_size = int(getattr(self.orchestrator, "vocab_size", 0) or 0)
+            if vocab_size > 0:
+                self.sentence_end_token_ids = get_sentence_end_token_ids(
+                    tokenizer0, vocab_size, QUOTE_CHARS, SENTENCE_END_CHARS
+                )
 
         for i, req in enumerate(reqs):
             cp = getattr(req.sampling_params, "custom_params", None) or {}
@@ -125,76 +143,22 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             first_ids: Set[int] = set()
             prefixes: List[List[int]] = []
 
-            # Include common trailing punctuation and quote-like enders. This helps
-            # harvest first-token IDs in tokenizers that fuse trailing chars.
-            end_punct = [
-                ",",
-                ".",
-                "?",
-                "!",
-                ":",
-                ";",
-            ]
-            for w in words_with_variants:
-                # Build surfaces for plain word, space+word, and all quote-like
-                # prefixes with and without a leading space to mirror tokenizer contexts.
-                base_surfaces = [w, f" {w}"]
-                for q in self._OPENING_QUOTES:
-                    base_surfaces.append(f"{q}{w}")
-                    base_surfaces.append(f" {q}{w}")
-                surfaces = []
-                for s in base_surfaces:
-                    surfaces.append(s)
-                    for p in end_punct:
-                        surfaces.append(s + p)
-                for surface in surfaces:
+            # PERFORMANCE FIX: Use cached surface variant generation
+            # Results are cached globally per word, so even if _prepare() is called
+            # multiple times during batch merges, we only do encode/decode ONCE per word
+            end_punct = [",", ".", "?"]
+
+            if tokenizer is not None:
+                for w in words_with_variants:
                     try:
-                        ids = tokenizer.encode(surface, add_special_tokens=False)
-                    except Exception:
-                        ids = []
-                    if not ids:
-                        continue
-                    first_idx = 0
-                    try:
-                        for j, tok in enumerate(ids):
-                            s = tokenizer.decode([tok])
-                            if re.search(r"[A-Za-z]", s):
-                                # Skip contraction fragments: tokens that are just apostrophe + short suffix
-                                # like 't, 's, 're, 'm, 'd, 'll, 've which are parts of contractions
-                                s_stripped = s.strip()
-                                # Check if it's a contraction fragment: starts with apostrophe/quote and has <=3 chars total
-                                is_contraction_fragment = (
-                                    len(s_stripped) <= 3
-                                    and len(s_stripped) > 0
-                                    and s_stripped[0] in ("'", '"', """, """, "`")
-                                )
-                                if is_contraction_fragment:
-                                    continue  # Skip this token, keep looking
-                                first_idx = j
-                                break
-                        tok_id = int(ids[first_idx])
-                        s_check = tokenizer.decode([tok_id]).strip()
-                        is_frag = (
-                            len(s_check) <= 3
-                            and len(s_check) > 0
-                            and s_check[0] in ("'", '"', """, """, "`")
+                        w_ids, w_prefixes = get_surface_variant_tokens(
+                            tokenizer, w, self._OPENING_QUOTES, end_punct
                         )
-                        if not is_frag:
-                            first_ids.add(tok_id)
-                            prefixes.append(ids[first_idx:])
+                        first_ids.update(w_ids)
+                        prefixes.extend(w_prefixes)
                     except Exception:
-                        try:
-                            s_check = tokenizer.decode([int(ids[0])]).strip()
-                            is_frag = (
-                                len(s_check) <= 3
-                                and len(s_check) > 0
-                                and s_check[0] in ("'", '"', """, """, "`")
-                            )
-                            if not is_frag:
-                                first_ids.add(int(ids[0]))
-                                prefixes.append(ids)
-                        except Exception:
-                            pass
+                        # If cache lookup fails, skip this word
+                        pass
 
             # Augment via cached index of first-word -> token ids
             try:
@@ -275,21 +239,26 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         step_B = min(B, int(output_ids.numel()))
         for i in range(step_B):
             req = reqs[i]
-            tok = getattr(req, "tokenizer", None)
             last_id = int(output_ids[i].item())
-            if tok is not None:
-                try:
-                    s = tok.decode([last_id])
-                except Exception:
-                    s = ""
-                j = len(s) - 1
-                while j >= 0 and s[j].isspace():
-                    j -= 1
-                if j >= 0:
-                    ch = s[j]
-                    self.next_pos_is_start[i] = bool(
-                        (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
-                    )
+            # PERFORMANCE FIX: Use pre-computed set instead of decode()
+            if self.sentence_end_token_ids is not None:
+                self.next_pos_is_start[i] = (last_id in self.sentence_end_token_ids)
+            else:
+                # Fallback to decode if cache not available (shouldn't happen)
+                tok = getattr(req, "tokenizer", None)
+                if tok is not None:
+                    try:
+                        s = tok.decode([last_id])
+                    except Exception:
+                        s = ""
+                    j = len(s) - 1
+                    while j >= 0 and s[j].isspace():
+                        j -= 1
+                    if j >= 0:
+                        ch = s[j]
+                        self.next_pos_is_start[i] = bool(
+                            (ch in QUOTE_CHARS) or (ch in SENTENCE_END_CHARS)
+                        )
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -370,7 +339,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         return logits
 
     def _filter(self, keep_indices: torch.Tensor):
-        keep = keep_indices
+        keep = keep_indices.cpu()
         self.guard_window = self.guard_window[keep]
         self.hard_at_bos = self.hard_at_bos[keep]
         self.hard_at_all_starts = self.hard_at_all_starts[keep]
@@ -437,27 +406,36 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         return is_start
 
     def get_last_hard_block_ids(self):
+        if not self.is_prepared():
+            return None
         return self._last_hard_blocks
 
     def get_computed_hard_block_ids(self):
         # Compute current hard blocks based on request state (BOS / start detection)
+        if not self.is_prepared():
+            return None
         reqs = self.orchestrator.reqs()
         if not reqs:
             return None
         out: List[Optional[torch.Tensor]] = [None] * len(reqs)
-        for i, req in enumerate(reqs):
+        # Clamp to available control-state to avoid races
+        L = min(
+            len(reqs),
+            int(self.guard_window.size(0)) if torch.is_tensor(self.guard_window) else len(reqs),
+            int(self.hard_at_bos.size(0)) if torch.is_tensor(self.hard_at_bos) else len(reqs),
+            int(self.hard_at_all_starts.size(0)) if torch.is_tensor(self.hard_at_all_starts) else len(reqs),
+        )
+        for i in range(L):
+            req = reqs[i]
             first_ids = self.first_token_ids[i]
             if first_ids is None or (
                 hasattr(first_ids, "numel") and first_ids.numel() == 0
             ):
                 continue
             # Respect window if we can infer tokens generated
-            try:
-                total_emitted = len(getattr(req, "output_ids", []) or [])
-                if total_emitted >= int(self.guard_window[i].item()):
-                    continue
-            except Exception:
-                pass
+            total_emitted = len(getattr(req, "output_ids", []) or [])
+            if total_emitted >= int(self.guard_window[i].item()):
+                continue
             out_ids_list = getattr(req, "output_ids", []) or []
             is_bos = len(out_ids_list) == 0
             if is_bos and bool(self.hard_at_bos[i].item()):

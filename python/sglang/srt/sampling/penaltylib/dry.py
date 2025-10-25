@@ -64,6 +64,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         multipliers: List[float] = []
         bases: List[float] = []
         allowed_lengths: List[int] = []
+        strides: List[int] = []
         breakers_ids: List[Optional[List[List[int]]]] = []
 
         for req in reqs:
@@ -71,6 +72,8 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             mult = float(cp.get("dry_multiplier", 0.0) or 0.0)
             base = float(cp.get("dry_base", 1.1) or 1.1)
             allow = int(cp.get("dry_allowed_length", 0) or 0)
+            # PERFORMANCE FIX: Increase default stride to reduce computation frequency
+            stride = int(cp.get("dry_stride", 3) or 3)
 
             brk_ids = cp.get("dry_sequence_breakers_ids", None)
             if brk_ids is None:
@@ -89,21 +92,32 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
             multipliers.append(mult)
             bases.append(base)
             allowed_lengths.append(allow)
+            strides.append(max(1, stride))
             breakers_ids.append(brk_ids if isinstance(brk_ids, list) else None)
 
+        # Keep control-state on CPU to avoid GPU<->CPU sync on .item() access
         self.dry_multiplier = torch.tensor(
-            multipliers, dtype=torch.float32, device=device
+            multipliers, dtype=torch.float32
         ).unsqueeze(1)
-        self.dry_base = torch.tensor(
-            bases, dtype=torch.float32, device=device
-        ).unsqueeze(1)
+        self.dry_base = torch.tensor(bases, dtype=torch.float32).unsqueeze(1)
         self.dry_allowed_length = torch.tensor(
-            allowed_lengths, dtype=torch.int32, device=device
+            allowed_lengths, dtype=torch.int32
         ).unsqueeze(1)
+        self.dry_stride = torch.tensor(strides, dtype=torch.int32).unsqueeze(1)
+        # Per-request token counters (CPU)
+        self._gen_counts = torch.zeros((len(reqs),), dtype=torch.int32)
         self.breakers = breakers_ids
 
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
-        return
+        if output_ids is None or output_ids.numel() == 0:
+            return
+        reqs = self.orchestrator.reqs()
+        if reqs is None:
+            return
+        L = min(len(reqs), int(output_ids.numel()), int(self._gen_counts.numel()))
+        if L <= 0:
+            return
+        self._gen_counts[:L] += 1
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -111,6 +125,7 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         dry_multiplier = self.dry_multiplier
         dry_base = self.dry_base
         dry_allowed_length = self.dry_allowed_length
+        dry_stride = self.dry_stride
         breakers = self.breakers
 
         reqs = self.orchestrator.reqs()
@@ -124,8 +139,15 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 continue
             base = float(dry_base[i].item())
             allow = int(dry_allowed_length[i].item())
+            stride = int(dry_stride[i].item()) if i < len(dry_stride) else 1
             brks = breakers[i]
             req = reqs[i]
+
+            # Decimate: run every `stride` tokens for this request
+            if i < int(self._gen_counts.numel()):
+                cnt = int(self._gen_counts[i].item())
+                if stride > 1 and (cnt % stride) != 0:
+                    continue
 
             # 1) Build token history (origin + output so far)
             hist = (req.origin_input_ids or []) + (req.output_ids or [])
@@ -145,7 +167,13 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                     continue
 
             # 3) Search longest repeating suffix length (> allow), capped to a window
-            max_search = min(len(hist) - 1, 128)
+            # PERFORMANCE FIX: Reduce default search window to limit computation
+            cp = getattr(req.sampling_params, "custom_params", None) or {}
+            try:
+                max_cap = int(cp.get("dry_max_search", 64) or 64)
+            except Exception:
+                max_cap = 64
+            max_search = min(len(hist) - 1, max_cap)
             if max_search <= allow:
                 continue
 
@@ -193,21 +221,31 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 continue
 
             # 5) Apply a positive penalty => subtract log(1 + penalty) from those candidate logits
+            # Batch the update per row to minimize kernel launches and Python loops
             pen = mult * (base**best_k)
-            try:
-                if pen > 0.0:
-                    delta = math.log1p(pen)
-                    for token_id in set(candidates):
-                        if 0 <= token_id < V:
-                            logits[i, token_id] -= float(delta)
-            except Exception:
-                pass
+            if pen > 0.0 and candidates:
+                try:
+                    delta = float(math.log1p(pen))
+                    uniq_ids = sorted(set(t for t in candidates if 0 <= t < V))
+                    if uniq_ids:
+                        col_idx = torch.tensor(
+                            uniq_ids, dtype=torch.long, device=logits.device
+                        )
+                        # Single fused in-place update for this row
+                        logits[i, col_idx] -= delta
+                except Exception:
+                    pass
 
     def _filter(self, keep_indices: torch.Tensor):
-        self.dry_multiplier = self.dry_multiplier[keep_indices]
-        self.dry_base = self.dry_base[keep_indices]
-        self.dry_allowed_length = self.dry_allowed_length[keep_indices]
-        self.breakers = [self.breakers[j] for j in keep_indices.tolist()]
+        keep = keep_indices.cpu()
+        self.dry_multiplier = self.dry_multiplier[keep]
+        self.dry_base = self.dry_base[keep]
+        self.dry_allowed_length = self.dry_allowed_length[keep]
+        if hasattr(self, "dry_stride"):
+            self.dry_stride = self.dry_stride[keep]
+        if hasattr(self, "_gen_counts") and self._gen_counts.numel() >= keep.numel():
+            self._gen_counts = self._gen_counts[keep.squeeze(-1) if keep.dim() > 1 else keep]
+        self.breakers = [self.breakers[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):
         self.dry_multiplier = torch.cat(
@@ -217,4 +255,8 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self.dry_allowed_length = torch.cat(
             [self.dry_allowed_length, their.dry_allowed_length], dim=0
         )
+        if hasattr(self, "dry_stride") and hasattr(their, "dry_stride"):
+            self.dry_stride = torch.cat([self.dry_stride, their.dry_stride], dim=0)
+        if hasattr(self, "_gen_counts") and hasattr(their, "_gen_counts"):
+            self._gen_counts = torch.cat([self._gen_counts, their._gen_counts], dim=0)
         self.breakers.extend(their.breakers)
