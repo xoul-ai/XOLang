@@ -194,10 +194,7 @@ class BatchedPenalizerOrchestrator:
         # then unique once per row
         accum: list = [[] for _ in range(len(reqs))]
         for pen in self.penalizers.values():
-            try:
-                lst = pen.get_computed_hard_block_ids()
-            except Exception:
-                lst = None
+            lst = pen.get_computed_hard_block_ids()
             if lst is None or not any(x is not None for x in lst):
                 lst = pen.get_last_hard_block_ids()
             if lst is None or not lst:

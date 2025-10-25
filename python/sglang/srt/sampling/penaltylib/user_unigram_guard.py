@@ -406,10 +406,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         return is_start
 
     def get_last_hard_block_ids(self):
+        if not self.is_prepared():
+            return None
         return self._last_hard_blocks
 
     def get_computed_hard_block_ids(self):
         # Compute current hard blocks based on request state (BOS / start detection)
+        if not self.is_prepared():
+            return None
         reqs = self.orchestrator.reqs()
         if not reqs:
             return None
@@ -429,12 +433,9 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
             ):
                 continue
             # Respect window if we can infer tokens generated
-            try:
-                total_emitted = len(getattr(req, "output_ids", []) or [])
-                if total_emitted >= int(self.guard_window[i].item()):
-                    continue
-            except Exception:
-                pass
+            total_emitted = len(getattr(req, "output_ids", []) or [])
+            if total_emitted >= int(self.guard_window[i].item()):
+                continue
             out_ids_list = getattr(req, "output_ids", []) or []
             is_bos = len(out_ids_list) == 0
             if is_bos and bool(self.hard_at_bos[i].item()):

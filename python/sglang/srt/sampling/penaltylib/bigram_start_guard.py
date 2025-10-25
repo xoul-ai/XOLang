@@ -332,10 +332,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         return logits
 
     def get_last_hard_block_ids(self):
+        if not self.is_prepared():
+            return None
         return self._last_hard_blocks
 
     def get_computed_hard_block_ids(self):
         # Compute hard blocks for current step independent of local _apply timing
+        if not self.is_prepared():
+            return None
         reqs = self.orchestrator.reqs()
         if not reqs:
             return None
@@ -366,27 +370,24 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # Two-step guard: use cumulated state to decide immediately-after-THE-at-start
             decided = False
             # Path A: use cumulated state if available
-            try:
-                pending = bool(self.pending_after_the_at_start[i].item())
+            pending = bool(self.pending_after_the_at_start[i].item())
 
-                if pending:
-                    need_space_variant = bool(self.suffix_variant_space[i].item())
-                    if (
-                        need_space_variant
-                        and self.word_with_space_ids is not None
-                        and self.word_with_space_ids.numel() > 0
-                    ):
-                        out[i] = self.word_with_space_ids
-                        decided = True
-                    elif (
-                        (not need_space_variant)
-                        and self.word_no_space_ids is not None
-                        and self.word_no_space_ids.numel() > 0
-                    ):
-                        out[i] = self.word_no_space_ids
-                        decided = True
-            except Exception:
-                pass
+            if pending:
+                need_space_variant = bool(self.suffix_variant_space[i].item())
+                if (
+                    need_space_variant
+                    and self.word_with_space_ids is not None
+                    and self.word_with_space_ids.numel() > 0
+                ):
+                    out[i] = self.word_with_space_ids
+                    decided = True
+                elif (
+                    (not need_space_variant)
+                    and self.word_no_space_ids is not None
+                    and self.word_no_space_ids.numel() > 0
+                ):
+                    out[i] = self.word_no_space_ids
+                    decided = True
             if decided:
                 continue
             # Path B: infer from request state if cumulated state not set yet on this rank
