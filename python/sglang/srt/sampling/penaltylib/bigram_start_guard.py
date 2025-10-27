@@ -38,7 +38,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         self._is_prepared = False
 
     def _is_required(self) -> bool:
-        return True
+        # Only required if there are actually requests in the batch
+        reqs = self.orchestrator.reqs()
+        return reqs is not None and len(reqs) > 0
 
     def _prepare(self):
         reqs = self.orchestrator.reqs()
