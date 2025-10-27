@@ -180,6 +180,24 @@ class Sampler(nn.Module):
             # Note: hard-blocks are enforced on logits before softmax; no need to re-zero probs
             del logits
 
+            # OPTIMIZATION: When penalizers are active, sync random seed across TP ranks
+            # This makes sampling deterministic across ranks, avoiding need to sync tokens afterwards
+            if (sampling_info.penalizer_orchestrator is not None
+                    and sampling_info.penalizer_orchestrator.is_required
+                    and dist.is_initialized()
+                    and self.tp_sync_group is not None):
+                # Generate a random seed on rank 0 and broadcast to all ranks
+                if dist.get_rank(self.tp_sync_group) == 0:
+                    random_seed = torch.randint(0, 2**31, (1,), device=probs.device, dtype=torch.int64)
+                else:
+                    random_seed = torch.zeros((1,), device=probs.device, dtype=torch.int64)
+                dist.broadcast(random_seed, src=0, group=self.tp_sync_group)
+
+                # Set the generator seed for this sampling step
+                torch.manual_seed(int(random_seed.item()))
+                if probs.is_cuda:
+                    torch.cuda.manual_seed_all(int(random_seed.item()))
+
             if True:  # Keep this redundant check to simplify some internal code sync
                 if global_server_args_dict["sampling_backend"] == "flashinfer":
                     if sampling_info.need_min_p_sampling:
@@ -241,12 +259,10 @@ class Sampler(nn.Module):
         # Sync token IDs across TP ranks when:
         # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
         # 2. Grammars are used (xgrammar increases non-determinism)
-        # 3. Penalizers are active (they depend on output_ids being synchronized)
+        # NOTE: Penalizers no longer need token sync because we sync random seed before sampling
         needs_sync = (
             SYNC_TOKEN_IDS_ACROSS_TP
             or sampling_info.grammars
-            or (sampling_info.penalizer_orchestrator is not None
-                and sampling_info.penalizer_orchestrator.is_required)
         )
 
         if needs_sync:
