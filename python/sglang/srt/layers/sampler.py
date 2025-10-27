@@ -241,33 +241,12 @@ class Sampler(nn.Module):
         # Sync token IDs across TP ranks when:
         # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
         # 2. Grammars are used (xgrammar increases non-determinism)
-        # 3. Penalizers have hard-blocks (they depend on output_ids being synchronized)
-        #    Optimization: Only sync when penalizers are actively blocking OR might block soon.
-        #    The bigram guard only blocks at sentence starts, so we check if any blocks exist.
-        #    If no blocks for several steps, ranks are likely in sync and we can skip expensive sync.
-        penalizer_needs_sync = False
-        if (sampling_info.penalizer_orchestrator is not None
-                and sampling_info.penalizer_orchestrator.is_required):
-            # Check if any penalizer has non-empty hard blocks
-            if hard_now is not None:
-                for blocked_ids in hard_now:
-                    if blocked_ids is not None and hasattr(blocked_ids, 'numel') and blocked_ids.numel() > 0:
-                        penalizer_needs_sync = True
-                        break
-
-            # If no blocks, only sync periodically (every 10 tokens) to prevent slow divergence
-            if not penalizer_needs_sync:
-                if not hasattr(self, '_sync_counter'):
-                    self._sync_counter = 0
-                self._sync_counter += 1
-                if self._sync_counter >= 10:
-                    penalizer_needs_sync = True
-                    self._sync_counter = 0
-
+        # 3. Penalizers are active (they depend on output_ids being synchronized)
         needs_sync = (
             SYNC_TOKEN_IDS_ACROSS_TP
             or sampling_info.grammars
-            or penalizer_needs_sync
+            or (sampling_info.penalizer_orchestrator is not None
+                and sampling_info.penalizer_orchestrator.is_required)
         )
 
         if needs_sync:
