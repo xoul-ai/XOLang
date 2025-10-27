@@ -73,62 +73,9 @@ class Sampler(nn.Module):
             pass
 
         # Compute hard-block ids once for this step (if any penalizers)
-        # OPTIMIZATION: Only rank 0 computes penalizers, then broadcasts to other ranks
-        # This avoids expensive token sync while maintaining correctness
         hard_now = None
         if sampling_info.penalizer_orchestrator is not None:
-            is_rank_0 = (not dist.is_initialized() or
-                        self.tp_sync_group is None or
-                        dist.get_rank(self.tp_sync_group) == 0)
-
-            if is_rank_0:
-                # Rank 0: Compute penalizer hard-blocks based on its local output_ids
-                hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
-
-            # Broadcast hard-blocks from rank 0 to all other ranks
-            if dist.is_initialized() and self.tp_sync_group is not None:
-                # Serialize hard_now to a broadcastable format
-                if is_rank_0 and hard_now is not None:
-                    # Pack: [num_requests, [len1, ids1..., len2, ids2..., ...]]
-                    packed = [len(hard_now)]
-                    for blocked_ids in hard_now:
-                        if blocked_ids is not None and blocked_ids.numel() > 0:
-                            packed.append(blocked_ids.numel())
-                            packed.extend(blocked_ids.tolist())
-                        else:
-                            packed.append(0)
-                    packed_tensor = torch.tensor(packed, dtype=torch.int64, device=logits.device)
-                else:
-                    packed_tensor = torch.tensor([0], dtype=torch.int64, device=logits.device)
-
-                # Get max size across ranks
-                size_tensor = torch.tensor([packed_tensor.numel()], dtype=torch.int64, device=logits.device)
-                dist.all_reduce(size_tensor, op=dist.ReduceOp.MAX, group=self.tp_sync_group)
-                max_size = int(size_tensor.item())
-
-                # Pad to max size
-                if packed_tensor.numel() < max_size:
-                    padding = torch.zeros(max_size - packed_tensor.numel(), dtype=torch.int64, device=logits.device)
-                    packed_tensor = torch.cat([packed_tensor, padding])
-
-                # Broadcast from rank 0
-                dist.broadcast(packed_tensor, src=0, group=self.tp_sync_group)
-
-                # Unpack on non-rank-0 ranks
-                if not is_rank_0:
-                    num_reqs = int(packed_tensor[0].item())
-                    if num_reqs > 0:
-                        hard_now = [None] * num_reqs
-                        idx = 1
-                        for i in range(num_reqs):
-                            length = int(packed_tensor[idx].item())
-                            idx += 1
-                            if length > 0:
-                                hard_now[i] = packed_tensor[idx:idx+length].clone()
-                                idx += length
-            else:
-                # Single-rank case: just compute normally
-                hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
+            hard_now = sampling_info.penalizer_orchestrator.get_hard_block_ids_now()
 
         # Optionally synchronize blocked ids across TP to avoid rank divergence
         if (
@@ -294,10 +241,12 @@ class Sampler(nn.Module):
         # Sync token IDs across TP ranks when:
         # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
         # 2. Grammars are used (xgrammar increases non-determinism)
-        # NOTE: Removed penalizer sync requirement - we now broadcast hard-blocks instead
+        # 3. Penalizers are active (they depend on output_ids being synchronized)
         needs_sync = (
             SYNC_TOKEN_IDS_ACROSS_TP
             or sampling_info.grammars
+            or (sampling_info.penalizer_orchestrator is not None
+                and sampling_info.penalizer_orchestrator.is_required)
         )
 
         if needs_sync:
