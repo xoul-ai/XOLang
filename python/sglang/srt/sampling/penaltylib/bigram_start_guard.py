@@ -275,7 +275,10 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             if is_start_here and single_token_blacklist is not None:
                 # OPTIMIZATION: Use soft penalty instead of hard block
                 SOFT_BLOCK_PENALTY = 1000.0
-                logits[i, single_token_blacklist] -= SOFT_BLOCK_PENALTY
+                # Clamp token IDs to valid range to avoid CUDA device-side assert
+                valid_ids = single_token_blacklist[single_token_blacklist < logits.shape[1]]
+                if valid_ids.numel() > 0:
+                    logits[i, valid_ids] -= SOFT_BLOCK_PENALTY
                 if single_token_blacklist is not None and single_token_blacklist.numel() > 0:
                     last_hard_blocks[i] = single_token_blacklist
 
@@ -309,11 +312,17 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 # OPTIMIZATION: Use soft penalty instead of hard block to allow TP rank divergence tolerance
                 SOFT_BLOCK_PENALTY = 1000.0  # Very strong penalty but not -inf
                 if need_space_variant and word_with_space_ids is not None:
-                    logits[i, word_with_space_ids] -= SOFT_BLOCK_PENALTY
+                    # Clamp token IDs to valid range to avoid CUDA device-side assert
+                    valid_ids = word_with_space_ids[word_with_space_ids < logits.shape[1]]
+                    if valid_ids.numel() > 0:
+                        logits[i, valid_ids] -= SOFT_BLOCK_PENALTY
                     if word_with_space_ids is not None and word_with_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_with_space_ids
                 elif (not need_space_variant) and word_no_space_ids is not None:
-                    logits[i, word_no_space_ids] -= SOFT_BLOCK_PENALTY
+                    # Clamp token IDs to valid range to avoid CUDA device-side assert
+                    valid_ids = word_no_space_ids[word_no_space_ids < logits.shape[1]]
+                    if valid_ids.numel() > 0:
+                        logits[i, valid_ids] -= SOFT_BLOCK_PENALTY
                     if word_no_space_ids is not None and word_no_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_no_space_ids
 
@@ -328,14 +337,16 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     if prog == len(seq) - 1:
                         next_tid = int(seq[prog])
                         # OPTIMIZATION: Use soft penalty instead of hard block
-                        SOFT_BLOCK_PENALTY = 1000.0
-                        logits[i, next_tid] -= SOFT_BLOCK_PENALTY
-                        try:
-                            last_hard_blocks[i] = torch.tensor(
-                                [next_tid], dtype=torch.int64, device=logits.device
-                            )
-                        except Exception:
-                            pass
+                        # Clamp token ID to valid range to avoid CUDA device-side assert
+                        if 0 <= next_tid < logits.shape[1]:
+                            SOFT_BLOCK_PENALTY = 1000.0
+                            logits[i, next_tid] -= SOFT_BLOCK_PENALTY
+                            try:
+                                last_hard_blocks[i] = torch.tensor(
+                                    [next_tid], dtype=torch.int64, device=logits.device
+                                )
+                            except Exception:
+                                pass
 
         return logits
 

@@ -336,9 +336,13 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # the logit distribution shape while applying a strong penalty.
         if any(x is not None for x in to_block):
             SOFT_BLOCK_PENALTY = 1000.0
+            vocab_size = logits.shape[1]
             for i, blocked_ids in enumerate(to_block):
                 if blocked_ids is not None and torch.is_tensor(blocked_ids) and blocked_ids.numel() > 0:
-                    logits[i, blocked_ids] -= SOFT_BLOCK_PENALTY
+                    # Clamp token IDs to valid range to avoid CUDA device-side assert
+                    valid_ids = blocked_ids[blocked_ids < vocab_size]
+                    if valid_ids.numel() > 0:
+                        logits[i, valid_ids] -= SOFT_BLOCK_PENALTY
         return logits
 
     def _filter(self, keep_indices: torch.Tensor):
