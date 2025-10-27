@@ -350,6 +350,7 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             len(self.pending_after_the_at_start),
             len(self.suffix_variant_space),
             len(self.first_token_ids_set_per_req),
+            len(self.first_token_requires_space_per_req),
             len(self.prev_pos_is_start),
             len(self.next_pos_is_start),
         )
@@ -370,10 +371,18 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             # Two-step guard: use cumulated state to decide immediately-after-THE-at-start
             decided = False
             # Path A: use cumulated state if available
-            pending = bool(self.pending_after_the_at_start[i].item())
+            pending = (
+                bool(self.pending_after_the_at_start[i].item())
+                if i < len(self.pending_after_the_at_start)
+                else False
+            )
 
             if pending:
-                need_space_variant = bool(self.suffix_variant_space[i].item())
+                need_space_variant = (
+                    bool(self.suffix_variant_space[i].item())
+                    if i < len(self.suffix_variant_space)
+                    else False
+                )
                 if (
                     need_space_variant
                     and self.word_with_space_ids is not None

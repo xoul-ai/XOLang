@@ -421,6 +421,7 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Clamp to available control-state to avoid races
         L = min(
             len(reqs),
+            len(self.first_token_ids),
             int(self.guard_window.size(0)) if torch.is_tensor(self.guard_window) else len(reqs),
             int(self.hard_at_bos.size(0)) if torch.is_tensor(self.hard_at_bos) else len(reqs),
             int(self.hard_at_all_starts.size(0)) if torch.is_tensor(self.hard_at_all_starts) else len(reqs),
@@ -434,14 +435,14 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 continue
             # Respect window if we can infer tokens generated
             total_emitted = len(getattr(req, "output_ids", []) or [])
-            if total_emitted >= int(self.guard_window[i].item()):
+            if i < len(self.guard_window) and total_emitted >= int(self.guard_window[i].item()):
                 continue
             out_ids_list = getattr(req, "output_ids", []) or []
             is_bos = len(out_ids_list) == 0
-            if is_bos and bool(self.hard_at_bos[i].item()):
+            if is_bos and i < len(self.hard_at_bos) and bool(self.hard_at_bos[i].item()):
                 out[i] = first_ids
                 continue
-            if (not is_bos) and bool(self.hard_at_all_starts[i].item()):
+            if (not is_bos) and i < len(self.hard_at_all_starts) and bool(self.hard_at_all_starts[i].item()):
                 if self._is_start_position(req):
                     out[i] = first_ids
         return out
