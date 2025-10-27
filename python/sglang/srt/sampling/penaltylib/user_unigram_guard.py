@@ -329,13 +329,16 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 if bias != 0.0:
                     logits[i, first_ids] += bias
 
-        # Apply hard blocks in a batched op
+        # OPTIMIZATION: Use soft penalty instead of hard block to allow TP rank divergence tolerance
+        # Instead of setting to -inf (hard block), subtract a large penalty (soft block)
+        # NOTE: We can't use apply_blocked_ids_mask_inplace here because it SETS values (using
+        # index_put_ and masked_fill_), but we need to SUBTRACT from current logits to maintain
+        # the logit distribution shape while applying a strong penalty.
         if any(x is not None for x in to_block):
-            from sglang.srt.sampling.penaltylib.mask_utils import (
-                apply_blocked_ids_mask_inplace,
-            )
-
-            apply_blocked_ids_mask_inplace(logits, to_block, fill_value=-float("inf"))
+            SOFT_BLOCK_PENALTY = 1000.0
+            for i, blocked_ids in enumerate(to_block):
+                if blocked_ids is not None and torch.is_tensor(blocked_ids) and blocked_ids.numel() > 0:
+                    logits[i, blocked_ids] -= SOFT_BLOCK_PENALTY
         return logits
 
     def _filter(self, keep_indices: torch.Tensor):

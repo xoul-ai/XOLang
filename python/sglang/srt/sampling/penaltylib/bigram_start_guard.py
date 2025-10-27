@@ -273,7 +273,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
             )
             if is_start_here and single_token_blacklist is not None:
-                logits[i, single_token_blacklist] = -float("inf")
+                # OPTIMIZATION: Use soft penalty instead of hard block
+                SOFT_BLOCK_PENALTY = 1000.0
+                logits[i, single_token_blacklist] -= SOFT_BLOCK_PENALTY
                 if single_token_blacklist is not None and single_token_blacklist.numel() > 0:
                     last_hard_blocks[i] = single_token_blacklist
 
@@ -304,12 +306,14 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 need_space_variant = (
                     bool(suffix_variant_space[i].item()) if i < len(suffix_variant_space) else False
                 )
+                # OPTIMIZATION: Use soft penalty instead of hard block to allow TP rank divergence tolerance
+                SOFT_BLOCK_PENALTY = 1000.0  # Very strong penalty but not -inf
                 if need_space_variant and word_with_space_ids is not None:
-                    logits[i, word_with_space_ids] = -float("inf")
+                    logits[i, word_with_space_ids] -= SOFT_BLOCK_PENALTY
                     if word_with_space_ids is not None and word_with_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_with_space_ids
                 elif (not need_space_variant) and word_no_space_ids is not None:
-                    logits[i, word_no_space_ids] = -float("inf")
+                    logits[i, word_no_space_ids] -= SOFT_BLOCK_PENALTY
                     if word_no_space_ids is not None and word_no_space_ids.numel() > 0:
                         last_hard_blocks[i] = word_no_space_ids
 
@@ -323,7 +327,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                     prog = int(suffix_progress[i].item()) if i < len(suffix_progress) else 0
                     if prog == len(seq) - 1:
                         next_tid = int(seq[prog])
-                        logits[i, next_tid] = -float("inf")
+                        # OPTIMIZATION: Use soft penalty instead of hard block
+                        SOFT_BLOCK_PENALTY = 1000.0
+                        logits[i, next_tid] -= SOFT_BLOCK_PENALTY
                         try:
                             last_hard_blocks[i] = torch.tensor(
                                 [next_tid], dtype=torch.int64, device=logits.device

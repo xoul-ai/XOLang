@@ -150,8 +150,9 @@ class Sampler(nn.Module):
                         if unions_per_row[i]:
                             hard[i] = torch.unique(torch.cat(unions_per_row[i]))
 
-        # Reapply hard blocks from penalizers just before sampling to ensure persistence
-        sampling_info.enforce_hard_blocks(logits, hard_now)
+        # NOTE: Removed hard-block enforcement since we now use soft penalties in penalizers
+        # Soft penalties are applied in the penalizer _apply() methods and don't need re-enforcement
+        # sampling_info.enforce_hard_blocks(logits, hard_now)
 
         if self.use_nan_detection and torch.any(torch.isnan(logits)):
             logger.warning("Detected errors during sampling! NaN in the logits.")
@@ -241,12 +242,11 @@ class Sampler(nn.Module):
         # Sync token IDs across TP ranks when:
         # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
         # 2. Grammars are used (xgrammar increases non-determinism)
-        # 3. Penalizers are active (they depend on output_ids being synchronized)
+        # NOTE: Penalizers no longer need token sync because they use soft penalties instead of hard blocks
+        # Soft penalties tolerate small divergences in output_ids across ranks
         needs_sync = (
             SYNC_TOKEN_IDS_ACROSS_TP
             or sampling_info.grammars
-            or (sampling_info.penalizer_orchestrator is not None
-                and sampling_info.penalizer_orchestrator.is_required)
         )
 
         if needs_sync:

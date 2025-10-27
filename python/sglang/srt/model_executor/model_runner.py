@@ -1986,11 +1986,13 @@ class ModelRunner:
             # Normal mode: Put CPU-heavy tasks here. They will be overlapped with the forward pass.
             sampling_info.update_regex_vocab_mask()
         sampling_info.apply_logits_bias(logits_output.next_token_logits)
-        # Enforce hard blocks early as well to reduce timing windows
-        try:
-            sampling_info.enforce_hard_blocks(logits_output.next_token_logits)
-        except Exception:
-            pass
+        # NOTE: Removed hard-block enforcement since we now use soft penalties in penalizers
+        # Soft penalties are applied in the penalizer _apply() methods and don't need re-enforcement
+        # Enforcing hard blocks here would override soft penalties and cause TP rank divergence
+        # try:
+        #     sampling_info.enforce_hard_blocks(logits_output.next_token_logits)
+        # except Exception:
+        #     pass
 
     def sample(
         self,
