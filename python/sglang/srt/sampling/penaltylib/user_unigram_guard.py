@@ -444,16 +444,20 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
                 hasattr(first_ids, "numel") and first_ids.numel() == 0
             ):
                 continue
-            # Respect window if we can infer tokens generated
-            total_emitted = len(getattr(req, "output_ids", []) or [])
-            if i < len(self.guard_window) and total_emitted >= int(self.guard_window[i].item()):
-                continue
-            out_ids_list = getattr(req, "output_ids", []) or []
-            is_bos = len(out_ids_list) == 0
+            # CRITICAL: Use internal state only, not req.output_ids
+            # Respect window based on generated_counts
+            if i < len(self.generated_counts) and i < len(self.guard_window):
+                total_emitted = int(self.generated_counts[i].item())
+                if total_emitted >= int(self.guard_window[i].item()):
+                    continue
+
+            # Check if at BOS or sentence start using internal state only
+            is_bos = (i < len(self.generated_counts) and int(self.generated_counts[i].item()) == 0)
+            is_start = True if is_bos else (i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item()))
+
             if is_bos and i < len(self.hard_at_bos) and bool(self.hard_at_bos[i].item()):
                 out[i] = first_ids
                 continue
-            if (not is_bos) and i < len(self.hard_at_all_starts) and bool(self.hard_at_all_starts[i].item()):
-                if self._is_start_position(req):
-                    out[i] = first_ids
+            if (not is_bos) and is_start and i < len(self.hard_at_all_starts) and bool(self.hard_at_all_starts[i].item()):
+                out[i] = first_ids
         return out

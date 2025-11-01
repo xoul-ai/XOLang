@@ -164,12 +164,17 @@ class Sampler(nn.Module):
         # Sync token IDs across TP ranks when:
         # 1. SYNC_TOKEN_IDS_ACROSS_TP env var is set
         # 2. Grammars are used (xgrammar increases non-determinism)
-        # NOTE: Penalizers no longer need token sync because they only use internal state
-        # (like frequency_penalty). They update state via _cumulate_output_tokens() which receives
-        # synced tokens, and NEVER read from req.output_ids in _apply().
+        # 3. Penalizers are active (DRY, bigram, unigram guards make binary blocking decisions)
+        #
+        # Why penalizers need sync:
+        # - cumulate_output_tokens() receives self.output_ids which can differ across TP ranks
+        # - Internal state (token_history, next_pos_is_start) built from these tokens diverges
+        # - Unlike frequency_penalty (gradual penalties), these penalizers make BINARY decisions
+        # - Binary decisions + divergent state = exponential cascading divergence
         needs_sync = (
             SYNC_TOKEN_IDS_ACROSS_TP
             or sampling_info.grammars
+            or (sampling_info.penalizer_orchestrator and sampling_info.penalizer_orchestrator.is_required)
         )
 
         if needs_sync:

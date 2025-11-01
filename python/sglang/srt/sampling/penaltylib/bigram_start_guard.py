@@ -353,12 +353,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             len(self.next_pos_is_start),
         )
         for i in range(L):
-            req = reqs[i]
-            out_ids_list = getattr(req, "output_ids", []) or []
-
-            is_start_here = (len(out_ids_list) == 0) or (
-                i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
-            )
+            # CRITICAL: Do NOT read req.output_ids! Use internal state only
+            is_start_here = i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
             if (
                 is_start_here
                 and self.single_token_blacklist is not None
@@ -395,37 +391,8 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 ):
                     out[i] = self.word_no_space_ids
                     decided = True
-            if decided:
-                continue
-            # Path B: infer from request state if cumulated state not set yet on this rank
-            first_ids_set2 = self.first_token_ids_set_per_req[i]
-            if first_ids_set2 and out_ids_list:
-                last_id2 = int(out_ids_list[-1])
-                if last_id2 in first_ids_set2:
-                    is_start_here = (len(out_ids_list) == 1) or (
-                        i < len(self.prev_pos_is_start)
-                        and bool(self.prev_pos_is_start[i].item())
-                    )
-                else:
-                    is_start_here = False
-
-                if is_start_here:
-                    req_map2 = self.first_token_requires_space_per_req[i] or {}
-                    need_space_variant2 = bool(req_map2.get(last_id2, True))
-
-                    if (
-                        need_space_variant2
-                        and self.word_with_space_ids is not None
-                        and self.word_with_space_ids.numel() > 0
-                    ):
-                        out[i] = self.word_with_space_ids
-
-                    elif (
-                        (not need_space_variant2)
-                        and self.word_no_space_ids is not None
-                        and self.word_no_space_ids.numel() > 0
-                    ):
-                        out[i] = self.word_no_space_ids
+            # NOTE: Removed Path B which read req.output_ids - causes TP divergence
+            # Only use cumulated state (Path A above)
 
         return out
 
