@@ -108,16 +108,30 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         self._gen_counts = torch.zeros((len(reqs),), dtype=torch.int32)
         self.breakers = breakers_ids
 
+        # CRITICAL: Maintain internal token history instead of reading from req.output_ids
+        # This prevents TP rank divergence since we update history via _cumulate_output_tokens()
+        # which receives synchronized tokens
+        self.token_history: List[List[int]] = []
+        for req in reqs:
+            # Initialize with origin_input_ids
+            hist = list(req.origin_input_ids or [])
+            self.token_history.append(hist)
+
     def _cumulate_output_tokens(self, output_ids: torch.Tensor):
         if output_ids is None or output_ids.numel() == 0:
             return
         reqs = self.orchestrator.reqs()
         if reqs is None:
             return
-        L = min(len(reqs), int(output_ids.numel()), int(self._gen_counts.numel()))
+        L = min(len(reqs), int(output_ids.numel()), int(self._gen_counts.numel()), len(self.token_history))
         if L <= 0:
             return
         self._gen_counts[:L] += 1
+
+        # Update internal token history with newly sampled tokens
+        for i in range(L):
+            token_id = int(output_ids[i].item())
+            self.token_history[i].append(token_id)
 
     def _apply(self, logits: torch.Tensor) -> torch.Tensor:
         B, V = logits.shape
@@ -149,8 +163,13 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
                 if stride > 1 and (cnt % stride) != 0:
                     continue
 
-            # 1) Build token history (origin + output so far)
-            hist = (req.origin_input_ids or []) + (req.output_ids or [])
+            # CRITICAL: Use internal token history instead of reading req.output_ids
+            # Reading req.output_ids causes TP rank divergence because output_ids may differ across ranks
+            # due to FP non-determinism. token_history is maintained via _cumulate_output_tokens()
+            # which receives synchronized tokens.
+            if i >= len(self.token_history):
+                continue
+            hist = self.token_history[i]
             if not hist or len(hist) < 2:
                 continue
 
@@ -246,6 +265,9 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         if hasattr(self, "_gen_counts") and self._gen_counts.numel() >= keep.numel():
             self._gen_counts = self._gen_counts[keep.squeeze(-1) if keep.dim() > 1 else keep]
         self.breakers = [self.breakers[j] for j in keep.tolist()]
+        # Filter token history
+        if hasattr(self, "token_history"):
+            self.token_history = [self.token_history[j] for j in keep.tolist()]
 
     def _merge(self, their: "BatchedDRYPenalizer"):
         self.dry_multiplier = torch.cat(
@@ -260,3 +282,6 @@ class BatchedDRYPenalizer(_BatchedPenalizer):
         if hasattr(self, "_gen_counts") and hasattr(their, "_gen_counts"):
             self._gen_counts = torch.cat([self._gen_counts, their._gen_counts], dim=0)
         self.breakers.extend(their.breakers)
+        # Merge token history
+        if hasattr(self, "token_history") and hasattr(their, "token_history"):
+            self.token_history.extend(their.token_history)

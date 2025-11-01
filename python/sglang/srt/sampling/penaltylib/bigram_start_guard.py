@@ -237,13 +237,11 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
         active_after_the = self.active_after_the
         suffix_variant_space = self.suffix_variant_space
         suffix_progress = self.suffix_progress
-        first_token_ids_set_per_req = self.first_token_ids_set_per_req
         last_hard_blocks = self._last_hard_blocks
         single_token_blacklist = self.single_token_blacklist
         pending_after_the_at_start = self.pending_after_the_at_start
         word_with_space_ids = self.word_with_space_ids
         word_no_space_ids = self.word_no_space_ids
-        first_token_requires_space_per_req = self.first_token_requires_space_per_req
         suffix_seq_space = self.suffix_seq_space
         suffix_seq_nospace = self.suffix_seq_nospace
 
@@ -258,20 +256,22 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
             len(pending_after_the_at_start),
             len(suffix_variant_space),
             len(suffix_progress),
-            len(first_token_ids_set_per_req),
             len(last_hard_blocks),
+            len(self.next_pos_is_start),
         )
         if L == 0:
             return logits
         for j in range(L):
             last_hard_blocks[j] = None
         for i in range(L):
-            req = reqs[i]
-            out_ids_list = getattr(req, "output_ids", []) or []
+            # CRITICAL: Do NOT read req.output_ids here! Use only internal state.
+            # Reading req.output_ids causes TP rank divergence because output_ids may differ across ranks
+            # due to FP non-determinism. Instead, rely on self.next_pos_is_start which is updated
+            # via _cumulate_output_tokens() with synchronized tokens.
 
-            is_start_here = (len(out_ids_list) == 0) or (
-                i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
-            )
+            # Check if current position is a sentence start (use internal state only)
+            is_start_here = i < len(self.next_pos_is_start) and bool(self.next_pos_is_start[i].item())
+
             if is_start_here and single_token_blacklist is not None:
                 # OPTIMIZATION: Use soft penalty instead of hard block
                 SOFT_BLOCK_PENALTY = 1000.0
@@ -282,30 +282,9 @@ class BatchedFixedBigramStartGuardPenalizer(_BatchedPenalizer):
                 if single_token_blacklist is not None and single_token_blacklist.numel() > 0:
                     last_hard_blocks[i] = single_token_blacklist
 
-            just_after_the = False
-            first_ids_set2 = first_token_ids_set_per_req[i]
-            if first_ids_set2 and out_ids_list:
-                last_id2 = int(out_ids_list[-1])
-                if last_id2 in first_ids_set2:
-                    is_start_here = (len(out_ids_list) == 1) or (
-                        i < len(self.prev_pos_is_start)
-                        and bool(self.prev_pos_is_start[i].item())
-                    )
-                else:
-                    is_start_here = False
-                if is_start_here:
-                    just_after_the = True
-                    # Use local views and guard against races that can shrink buffers
-                    if i < len(active_after_the) and not bool(active_after_the[i].item()):
-                        active_after_the[i] = True
-                        req_map2 = first_token_requires_space_per_req[i] or {}
-                        need_space_variant2 = bool(req_map2.get(last_id2, True))
-                        if i < len(suffix_variant_space):
-                            suffix_variant_space[i] = need_space_variant2
-                        if i < len(suffix_progress):
-                            suffix_progress[i] = 0
-
-            if (i < len(pending_after_the_at_start) and pending_after_the_at_start[i]) or just_after_the:
+            # Check if we're immediately after "The" at a start position (use internal state only)
+            # pending_after_the_at_start is maintained in _cumulate_output_tokens()
+            if i < len(pending_after_the_at_start) and pending_after_the_at_start[i]:
                 need_space_variant = (
                     bool(suffix_variant_space[i].item()) if i < len(suffix_variant_space) else False
                 )

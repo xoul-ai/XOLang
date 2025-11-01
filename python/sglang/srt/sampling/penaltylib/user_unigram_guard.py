@@ -297,15 +297,19 @@ class BatchedUserUnigramStartGuardPenalizer(_BatchedPenalizer):
         # Batch-collect rows needing hard blocks, and apply in one fused op
         to_block: List[Optional[torch.Tensor]] = [None] * B
         for i in range(B):
-            req = reqs[i]
+            # CRITICAL: Do NOT read req.output_ids here! Use only internal state.
+            # Reading req.output_ids causes TP rank divergence because output_ids may differ across ranks
+            # due to FP non-determinism. Instead, rely on generated_counts and next_pos_is_start which are
+            # maintained via _cumulate_output_tokens() with synchronized tokens.
+
             first_ids = first_token_ids[i]
             if first_ids is None or first_ids.numel() == 0:
                 continue
             if int(generated_counts[i].item()) >= int(guard_window[i].item()):
                 continue
 
-            _out_ids = getattr(req, "output_ids", None) or []
-            is_bos = len(_out_ids) == 0
+            # Check if current position is BOS or sentence start (use internal state only)
+            is_bos = int(generated_counts[i].item()) == 0
             is_start = True if is_bos else bool(next_pos_is_start[i].item())
             if not is_start:
                 continue
